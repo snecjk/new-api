@@ -3,7 +3,7 @@
 本脚本在服务器上把 **new-api** 以 docker 容器方式部署起来，并连接同一台机器上已由
 [`install-docker-redis-mysql.sh`](install-docker-redis-mysql.sh) 部署好的 `redis6` / `mysql8` 容器。
 
-配套脚本：[`deploy/deploy-newapi.sh`](deploy-newapi.sh)
+配套脚本：[`deploy-newapi.sh`](deploy-newapi.sh)
 
 > 前置条件：先按 [`deploy-docker-redis-mysql.md`](deploy-docker-redis-mysql.md) 完成 Docker、Redis、MySQL 的安装部署，确保 `redis6`、`mysql8` 两个容器已正常运行。
 
@@ -82,7 +82,7 @@ sudo bash deploy-newapi.sh update    # 拉取最新镜像并重建容器
 在**本地终端**执行：
 
 ```bash
-scp deploy/deploy-newapi.sh ubuntu@<服务器IP>:~/deploy-newapi.sh
+scp deploy/china/deploy-newapi.sh ubuntu@<服务器IP>:~/deploy-newapi.sh
 ```
 
 ### 2. 在服务器上启动

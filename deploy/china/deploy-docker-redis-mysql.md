@@ -6,7 +6,7 @@
 2. 启动 **Redis 6.0** 容器（账号 `root` / 密码 `622851Tt.`）
 3. 启动 **MySQL 8.0** 容器（账号 `root` / 密码 `622851Tt.`）
 
-配套脚本：[`deploy/install-docker-redis-mysql.sh`](install-docker-redis-mysql.sh)
+配套脚本：[`install-docker-redis-mysql.sh`](install-docker-redis-mysql.sh)
 
 ---
 
@@ -42,7 +42,7 @@
 
 ```bash
 ssh ubuntu@<服务器IP> 'rm -f ~/install.sh'
-scp deploy/install-docker-redis-mysql.sh ubuntu@<服务器IP>:~/install.sh
+scp deploy/china/install-docker-redis-mysql.sh ubuntu@<服务器IP>:~/install.sh
 ```
 
 > 若 SSH 提示 `REMOTE HOST IDENTIFICATION HAS CHANGED`（重装/更换服务器后常见），先执行 `ssh-keygen -R <服务器IP>` 清掉旧主机密钥再重连。
