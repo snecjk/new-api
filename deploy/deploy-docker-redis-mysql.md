@@ -41,11 +41,11 @@
 在**本地终端**执行（把脚本拷贝到服务器）：
 
 ```bash
-ssh ubuntu@140.143.183.34 'rm -f ~/install.sh'
-scp deploy/install-docker-redis-mysql.sh ubuntu@140.143.183.34:~/install.sh
+ssh ubuntu@<服务器IP> 'rm -f ~/install.sh'
+scp deploy/install-docker-redis-mysql.sh ubuntu@<服务器IP>:~/install.sh
 ```
 
-> 若 SSH 提示 `REMOTE HOST IDENTIFICATION HAS CHANGED`（重装/更换服务器后常见），先执行 `ssh-keygen -R 140.143.183.34` 清掉旧主机密钥再重连。
+> 若 SSH 提示 `REMOTE HOST IDENTIFICATION HAS CHANGED`（重装/更换服务器后常见），先执行 `ssh-keygen -R <服务器IP>` 清掉旧主机密钥再重连。
 
 ### 2. 在服务器上执行
 

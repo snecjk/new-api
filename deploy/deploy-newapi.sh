@@ -22,39 +22,53 @@
 
 set -euo pipefail
 
-# ---------------- 可配置项 ----------------
+# ---------------- 可配置项（均支持环境变量覆盖，便于 deploy-all.sh 注入统一凭据与反代参数）----------------
 # new-api 容器
-NEWAPI_IMAGE="calciumion/new-api:latest"
-NEWAPI_CONTAINER="new-api"
-NEWAPI_PORT=3000
+NEWAPI_IMAGE="${NEWAPI_IMAGE:-calciumion/new-api:latest}"
+NEWAPI_CONTAINER="${NEWAPI_CONTAINER:-new-api}"
 
 # 持久化目录（与 redis6/mysql8 的 /data/redis /data/mysql 同级）
-NEWAPI_DATA_DIR="/data/new-api/data"
-NEWAPI_LOG_DIR="/data/new-api/logs"
+NEWAPI_DATA_DIR="${NEWAPI_DATA_DIR:-/data/new-api/data}"
+NEWAPI_LOG_DIR="${NEWAPI_LOG_DIR:-/data/new-api/logs}"
 
 # 共享网络（new-api 与 redis6/mysql8 都挂到这里，容器名互通）
-SHARED_NETWORK="newapi-net"
+SHARED_NETWORK="${SHARED_NETWORK:-newapi-net}"
 
 # 已存在的依赖容器（由 install-docker-redis-mysql.sh 创建）
-REDIS_CONTAINER="redis6"
-MYSQL_CONTAINER="mysql8"
+REDIS_CONTAINER="${REDIS_CONTAINER:-redis6}"
+MYSQL_CONTAINER="${MYSQL_CONTAINER:-mysql8}"
 
 # 数据库与 Redis 连接凭据（必须与 install-docker-redis-mysql.sh 中一致）
-MYSQL_USER="root"
-MYSQL_PASSWORD="622851Tt."
-MYSQL_DB="new-api"
-REDIS_USER="root"
-REDIS_PASSWORD="622851Tt."
+MYSQL_USER="${MYSQL_USER:-root}"
+MYSQL_PASSWORD="${MYSQL_PASSWORD:-622851Tt.}"
+MYSQL_DB="${MYSQL_DB:-new-api}"
+REDIS_USER="${REDIS_USER:-root}"
+REDIS_PASSWORD="${REDIS_PASSWORD:-622851Tt.}"
 
 # new-api 业务参数
-TZ="Asia/Shanghai"
-NODE_NAME="new-api-node-1"
-ERROR_LOG_ENABLED="true"
-BATCH_UPDATE_ENABLED="true"
+TZ="${TZ:-Asia/Shanghai}"
+NODE_NAME="${NODE_NAME:-new-api-node-1}"
+ERROR_LOG_ENABLED="${ERROR_LOG_ENABLED:-true}"
+BATCH_UPDATE_ENABLED="${BATCH_UPDATE_ENABLED:-true}"
+
+# ---------------- 反代/会话相关（配合 deploy-domain.sh + HTTPS 域名）----------------
+# 绑定域名：留空=本地 HTTP 直连(不设 Secure cookie)；设置=反代 HTTPS 场景
+DOMAIN="${DOMAIN:-}"
+# 会话密钥：单机建议设，迁移到新机器时必须复用同一值（多机必须）
+SESSION_SECRET="${SESSION_SECRET:-}"
+# SESSION_COOKIE_SECURE 不作为独立配置项：DOMAIN 非空时 create_container 自动强制 true
+# （代码强绑定 SESSION_COOKIE_TRUSTED_URL，缺一启动报错）；DOMAIN 为空即本地 HTTP，不设 secure。
+# 可信代理网段：留空=信任默认(loopback/RFC1918/fc00::/7，含 docker 172.x)；none=严格；或填 CIDR 逗号列表
+TRUSTED_PROXIES="${TRUSTED_PROXIES:-}"
+
+# DEBUG_BIND：留空=3000 不映射宿主机(默认,靠 newapi-net 容器名回源,公网不可直连)；
+#             127.0.0.1=仅本机可访问 3000(调试用)，不对外暴露
+DEBUG_BIND="${DEBUG_BIND:-}"
+# ----------------------------------------
 
 # 启动后健康检查轮询参数
-HEALTH_WAIT_ROUNDS=30
-HEALTH_WAIT_INTERVAL=2
+HEALTH_WAIT_ROUNDS="${HEALTH_WAIT_ROUNDS:-30}"
+HEALTH_WAIT_INTERVAL="${HEALTH_WAIT_INTERVAL:-2}"
 # ----------------------------------------
 
 log()  { echo -e "\033[34m[$(date '+%H:%M:%S')]\033[0m $*"; }
@@ -102,8 +116,11 @@ connect_deps() {
       log "容器 ${dep} 已挂载到 ${SHARED_NETWORK}。"
     else
       log "将容器 ${dep} 挂载到 ${SHARED_NETWORK}..."
-      docker network connect "${SHARED_NETWORK}" "${dep}" 2>/dev/null \
-        || warn "挂载 ${dep} 失败（可能已挂或容器状态异常），稍后如连接报错请检查 docker network inspect ${SHARED_NETWORK}。"
+      if ! docker network connect "${SHARED_NETWORK}" "${dep}"; then
+        err "挂载 ${dep} 到 ${SHARED_NETWORK} 失败（容器状态异常或权限问题）。"
+        err "检查：docker ps -a | grep ${dep}；docker network inspect ${SHARED_NETWORK}"
+        exit 1
+      fi
     fi
   done
 }
@@ -125,12 +142,31 @@ create_container() {
   log "拉取 new-api 镜像 ${NEWAPI_IMAGE}..."
   docker pull "${NEWAPI_IMAGE}"
 
+  # 端口映射：默认不暴露宿主机(靠 newapi-net 容器名回源,公网不可直连)；
+  # DEBUG_BIND=127.0.0.1 时仅本机可访问 3000(调试用)。
+  # 用字符串拼接而非数组，避免 set -u 下空数组在旧 bash(<4.4) 报 unbound variable。
+  local extra=""
+  if [[ -n "${DEBUG_BIND}" ]]; then
+    extra+=" -p ${DEBUG_BIND}:3000:3000"
+  fi
+
+  # 会话/反代 env：DOMAIN 非空时强制 SECURE=true + TRUSTED_URL(代码强绑定,缺一启动报错)
+  if [[ -n "${DOMAIN}" ]]; then
+    extra+=" -e SESSION_COOKIE_SECURE=true -e SESSION_COOKIE_TRUSTED_URL=https://${DOMAIN}"
+    [[ -n "${SESSION_SECRET}"  ]] && extra+=" -e SESSION_SECRET=${SESSION_SECRET}"
+    [[ -n "${TRUSTED_PROXIES}" ]] && extra+=" -e TRUSTED_PROXIES=${TRUSTED_PROXIES}"
+  elif [[ -n "${SESSION_SECRET}" ]]; then
+    # 无域名(本地 HTTP)：SESSION_SECRET 若显式提供也注入(单机也建议设)
+    extra+=" -e SESSION_SECRET=${SESSION_SECRET}"
+  fi
+
   log "启动 new-api 容器..."
+  # shellcheck disable=SC2086  # extra 经分词展开为多个 docker 参数，值均无空格/通配符
   docker run -d \
     --name "${NEWAPI_CONTAINER}" \
     --restart always \
     --network "${SHARED_NETWORK}" \
-    -p "${NEWAPI_PORT}:3000" \
+    ${extra} \
     -e "SQL_DSN=${sql_dsn}" \
     -e "REDIS_CONN_STRING=${redis_conn}" \
     -e "TZ=${TZ}" \
@@ -178,7 +214,13 @@ cmd_start() {
   fi
 
   wait_healthy || return 1
-  ok "new-api 已启动：http://<服务器IP>:${NEWAPI_PORT}"
+  if [[ -n "${DOMAIN}" ]]; then
+    ok "new-api 已启动：反代 https://${DOMAIN}（由 deploy-domain.sh 提供，3000 未暴露公网）"
+  elif [[ -n "${DEBUG_BIND}" ]]; then
+    ok "new-api 已启动：本地直连 http://${DEBUG_BIND}:3000（仅服务器本机可访问，公网不可直连）"
+  else
+    ok "new-api 已启动：3000 仅在 newapi-net 内可达（无主机端口映射，公网不可直连）"
+  fi
 }
 
 cmd_stop() {

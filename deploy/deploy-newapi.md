@@ -82,13 +82,13 @@ sudo bash deploy-newapi.sh update    # 拉取最新镜像并重建容器
 在**本地终端**执行：
 
 ```bash
-scp deploy/deploy-newapi.sh ubuntu@140.143.183.34:~/deploy-newapi.sh
+scp deploy/deploy-newapi.sh ubuntu@<服务器IP>:~/deploy-newapi.sh
 ```
 
 ### 2. 在服务器上启动
 
 ```bash
-ssh ubuntu@140.143.183.34 'sudo bash ~/deploy-newapi.sh start'
+ssh ubuntu@<服务器IP> 'sudo bash ~/deploy-newapi.sh start'
 ```
 
 > 普通用户操作 docker 需要 `sudo`。若已 `sudo usermod -aG docker ubuntu` 并重新登录，则可免 `sudo`。
@@ -161,6 +161,25 @@ sudo docker exec -it new-api sh
 | `new-api 未在预期时间内就绪` | `sudo docker logs new-api --tail 100` 查看启动日志，常见为 DSN 密码不匹配或 MySQL 库未创建 |
 | Redis 认证失败 | 确认 `REDIS_PASSWORD` 与 `redis6` ACL 文件 `/data/redis/users.acl` 一致；ACL 用户用 `root` 或 `default`，密码相同 |
 | MySQL 认证失败 | 确认 `MYSQL_PASSWORD` 与 `mysql8` 的 `MYSQL_ROOT_PASSWORD` 一致，且 `root@%` 已开放远程登录 |
-| 端口 3000 无法访问 | 云安全组未放行 / 服务器 `ufw`/`firewalld` 未放行 / 容器未运行：`sudo bash ~/deploy-newapi.sh status` |
+| 端口 3000 无法访问 | 反代模式下 3000 默认不暴露公网（由 Caddy 回源，见 [`deploy-domain.md`](deploy-domain.md)）；本地直连模式需设 `DEBUG_BIND=127.0.0.1` 才在服务器本机可访问 3000；若需公网直连调试再确认安全组/`ufw`/`firewalld` 放行 3000 |
 | `docker: command not found` | 先运行 `install-docker-redis-mysql.sh` 安装 Docker |
 | `permission denied ... docker.sock` | 普通用户无权访问 docker socket，命令前加 `sudo`，或加入 docker 组后重新登录 |
+
+---
+
+## 九、配合域名反代（HTTPS）
+
+反代上线后（Caddy 由 [`deploy-domain.sh`](deploy-domain.md) 提供），new-api 侧需设置以下环境变量，
+本脚本已自动处理（`DOMAIN` 非空时强制注入，无需手动加 `-e`）：
+
+| 环境变量 | 作用 | 何时注入 |
+|----------|------|----------|
+| `DOMAIN` | 绑定域名，触发 HTTPS Secure cookie 模式 | 设了即走反代 HTTPS |
+| `SESSION_COOKIE_SECURE` | 启用 Secure Cookie + OriginGuard | `DOMAIN` 非空时自动 `true` |
+| `SESSION_COOKIE_TRUSTED_URL` | `https://<DOMAIN>`，与上者代码强绑定 | `DOMAIN` 非空时自动 |
+| `SESSION_SECRET` | 会话密钥，单机建议设、换机迁移必须复用同一值 | 由 `deploy-all.sh` 生成/传入 |
+| `TRUSTED_PROXIES` | 可信代理网段（可选；留空默认信任 loopback/RFC1918，含 docker `172.x`） | 留空用默认即可 |
+
+**端口策略**：`DOMAIN` 非空时，3000 默认**不再映射宿主机公网**（`-p` 移除），Caddy 容器在 `newapi-net` 内用容器名 `new-api:3000` 回源，公网无法直连 3000。调试可设 `DEBUG_BIND=127.0.0.1` 让服务器本机访问 3000。
+
+> 推荐：用 [`deploy-all.sh`](deploy-all.sh) 一条命令完成 Redis/MySQL + new-api + Caddy 域名反代的全链路部署（给 IP/账号/密码即可），无需手动 scp。手动 `start/stop/restart` 仅用于在服务器上单独维护 new-api。

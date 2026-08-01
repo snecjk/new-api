@@ -20,37 +20,37 @@
 
 set -euo pipefail
 
-# ---------------- 可配置项 ----------------
-REDIS_PASSWORD="622851Tt."
-REDIS_USER="root"            # Redis 6+ ACL 用户名
-MYSQL_ROOT_PASSWORD="622851Tt."
-MYSQL_ROOT_USER="root"
+# ---------------- 可配置项（均支持环境变量覆盖，便于 deploy-all.sh 注入统一凭据）----------------
+REDIS_PASSWORD="${REDIS_PASSWORD:-622851Tt.}"
+REDIS_USER="${REDIS_USER:-root}"            # Redis 6+ ACL 用户名
+MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-622851Tt.}"
+MYSQL_ROOT_USER="${MYSQL_ROOT_USER:-root}"
 
-REDIS_PORT=6379
-MYSQL_PORT=3306
+REDIS_PORT="${REDIS_PORT:-6379}"
+MYSQL_PORT="${MYSQL_PORT:-3306}"
 
-REDIS_VERSION="6.0"
-MYSQL_VERSION="8.0"
+REDIS_VERSION="${REDIS_VERSION:-6.0}"
+MYSQL_VERSION="${MYSQL_VERSION:-8.0}"
 
-REDIS_CONTAINER="redis6"
-MYSQL_CONTAINER="mysql8"
+REDIS_CONTAINER="${REDIS_CONTAINER:-redis6}"
+MYSQL_CONTAINER="${MYSQL_CONTAINER:-mysql8}"
 
-REDIS_DATA_DIR="/data/redis"
-MYSQL_DATA_DIR="/data/mysql"
+REDIS_DATA_DIR="${REDIS_DATA_DIR:-/data/redis}"
+MYSQL_DATA_DIR="${MYSQL_DATA_DIR:-/data/mysql}"
 
 # 业务库（供 new-api 使用；库名带连字符，SQL 中用反引号包裹）
-MYSQL_DB="new-api"
+MYSQL_DB="${MYSQL_DB:-new-api}"
 # 是否开放 root 远程登录（root@%），便于本地/外部连接调试
-MYSQL_ALLOW_REMOTE_ROOT="true"
+MYSQL_ALLOW_REMOTE_ROOT="${MYSQL_ALLOW_REMOTE_ROOT:-true}"
 
 # Docker apt 源镜像（国内访问 download.docker.com 不稳定，默认用腾讯云内网镜像，
 # 不走公网流量且最快；公网 VM 可改为 https://mirrors.aliyun.com 或
 # https://mirrors.tuna.tsinghua.edu.cn）
-DOCKER_APT_MIRROR="https://mirrors.tencentyun.com"
+DOCKER_APT_MIRROR="${DOCKER_APT_MIRROR:-https://mirrors.tencentyun.com}"
 # Docker yum 源镜像（CentOS/RHEL）
-DOCKER_YUM_MIRROR="https://mirrors.tencentyun.com"
+DOCKER_YUM_MIRROR="${DOCKER_YUM_MIRROR:-https://mirrors.tencentyun.com}"
 # Docker Hub 镜像加速（拉取 redis/mysql 等），留空则不配置
-DOCKER_REGISTRY_MIRROR="https://mirror.ccs.tencentyun.com"
+DOCKER_REGISTRY_MIRROR="${DOCKER_REGISTRY_MIRROR:-https://mirror.ccs.tencentyun.com}"
 # ----------------------------------------
 
 log()  { echo -e "\033[34m[$(date '+%H:%M:%S')]\033[0m $*"; }
