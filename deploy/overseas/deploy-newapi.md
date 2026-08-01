@@ -56,8 +56,8 @@ MySQL/Redis 默认**不走 TLS**，跨公网传输的是**明文**（含密码 `
 |------|------|
 | 海外 new-api 容器名 | `new-api` |
 | 镜像 | `calciumion/new-api:latest` |
-| 海外对外端口（宿主机） | `3000`（docker-proxy 绑 0.0.0.0:3000，云端口映射的「内网端口」即此） |
-| 公网访问端口 | `10016`（云控制台「端口映射」内网 3000 → 公网 10016；**非宿主机 3000**，由云分配，删除/重建规则会变） |
+| 海外对外端口（宿主机） | `443`（`INGRESS_PORT=443` 默认，docker-proxy 绑 0.0.0.0:443；云端 HTTP 代理回源到此） |
+| 公网访问 | `https://019fbc8cdaf070d99719a571e184014b.ap-northeast-1.a8g1v3.xyz`（云「HTTP 代理 内网443→域名」规则 `518`，边缘 TLS，无需本机证书） |
 | 海外机公网 IP | `38.226.195.219`（SSH 端口 `10009`） |
 | 海外机内网 IP | `10.198.2.236`（同 VPC 内可达，跨公网不用） |
 | 海外机区域 | `ap-northeast-1`（东京） |
@@ -144,7 +144,7 @@ new-api 的所有配额写入（token/user/channel 的 `quota`/`used_quota`/`req
 |------|--------|------|
 | `NEWAPI_IMAGE` | `calciumion/new-api:latest` | 镜像地址 |
 | `NEWAPI_CONTAINER` | `new-api` | 容器名 |
-| `NEWAPI_PORT` | `3000` | 海外对外端口 |
+| `NEWAPI_PORT` | `3000` | 直连模式（`DOMAIN=` 空时）宿主机端口；默认走 `INGRESS_PORT=443`，此项不生效 |
 | `NEWAPI_DATA_DIR` | `/data/new-api/data` | 海外数据持久化目录 |
 | `NEWAPI_LOG_DIR` | `/data/new-api/logs` | 海外日志持久化目录 |
 | `SHARED_NETWORK` | `newapi-net` | 海内共享网络（不挂本地 redis/mysql） |
@@ -158,10 +158,10 @@ new-api 的所有配额写入（token/user/channel 的 `quota`/`used_quota`/`req
 | `BATCH_UPDATE_ENABLED` | `false` | 批量更新；跨境默认 false（计费更稳） |
 | `TZ` | `UTC` | 时区；要与国内日志对齐改 `Asia/Shanghai` |
 | `ERROR_LOG_ENABLED` | `true` | 错误日志 |
-| `DOMAIN` | （空） | 绑定域名；留空=本地 HTTP 直连 3000，设置=反代 HTTPS |
+| `DOMAIN` | `019fbc…a8g1v3.xyz` | 绑定域名（默认本海外机云域名）；显式 `DOMAIN=` 留空=本地 HTTP 直连 3000 |
 | `TRUSTED_PROXIES` | （空） | 可信代理网段（反代场景） |
-| `DEBUG_BIND` | （空） | 留空=3000 对外；`127.0.0.1`=仅本机调试 |
-| `INGRESS_PORT` | （空） | `DOMAIN` 非空时本机监听端口（外部/云反代模式）；`443` 配云 HTTP 代理规则让 `https://域名` 直达；留空=本地 Caddy 容器反代 |
+| `DEBUG_BIND` | （空） | 留空=交 `DOMAIN`/`INGRESS_PORT` 分支（默认 443）；`127.0.0.1`=仅本机调试 |
+| `INGRESS_PORT` | `443` | `DOMAIN` 非空时本机监听端口（外部/云反代模式，默认 443 配云 HTTP 代理规则让 `https://域名` 直达）；显式留空=本地 Caddy 容器反代 |
 
 > ⚠️ MySQL/Redis 密码必须与国内 `install-docker-redis-mysql.sh` 一致，否则认证失败。
 > ⚠️ MySQL DSN 格式 `user:pass@tcp(host:port)/db` 中，密码若含 `@` `:` `/` 会破坏解析——
@@ -197,7 +197,7 @@ new-api 的所有配额写入（token/user/channel 的 `quota`/`used_quota`/`req
 本海外机公网 IP 为 `38.226.195.219`（内网 `10.198.2.236` 仅同 VPC 内可达，跨公网不参与路由）。
 
 在**国内服务器的云控制台**把 inbound `3306`/`6379` 来源限定为 `38.226.195.219`（**仅云安全组有效**；
-ufw/firewalld 对 Docker 发布端口无效，不必配）。**海外机**经云控制台「端口映射」把内网 `3000` 暴露为公网端口（本例 `10016`）；要 HTTPS 走 443 HTTP 代理（见「十」）。
+ufw/firewalld 对 Docker 发布端口无效，不必配）。**海外机**默认走云「HTTP 代理 内网443→域名」规则（HTTPS，见「十」路 A）；明文 3000→公网端口 非默认，需显式 `DOMAIN=` 切回（见「六、3」末）。
 
 > ⚠️ 国内安全组放行的是海外机**公网** IP `38.226.195.219`，**不是内网 `10.198.2.236`**——
 > 跨公网流量源 IP 是公网 IP，填成内网 IP 会一直连不上 3306/6379。
@@ -267,15 +267,15 @@ ssh -p 10009 root@38.226.195.219 'sudo bash ~/deploy-newapi.sh start'
 
 ### 3. 访问
 
-公网端口由云控制台「端口映射」分配，**不等于内网端口 3000**——像 22 那条内网端口映射到公网 `10009` 一样，内网 3000 这条云分配的公网端口是 **`10016`**。先在云控制台「端口映射」加一条规则（内网端口 `3000`，类型端口映射），生效后用它给的公网 Endpoint 访问：
+默认走域名 HTTPS：new-api 听本机 `443`（`INGRESS_PORT=443` 默认），云控制台「HTTP 代理 内网443→域名」规则（`518`，已生效）把 `https://域名` 在边缘解 TLS 后转明文到本机 443 → new-api。无需本机证书、无需手动加映射规则。
 
-- 公网 IP：`http://38.226.195.219:10016`（规则「内网 3000 → 公网 10016」，已生效；明文 HTTP）
-- 公网域名（HTTPS）：`https://019fbc8cdaf070d99719a571e184014b.ap-northeast-1.a8g1v3.xyz`（云「HTTP 代理 内网443→域名」规则已生效 + `INGRESS_PORT=443` 让 new-api 听本机 443，云端边缘做 TLS；部署见「十」路 A）
+- 公网访问（HTTPS，默认）：`https://019fbc8cdaf070d99719a571e184014b.ap-northeast-1.a8g1v3.xyz`
+
+`sudo bash ~/deploy-newapi.sh start`（或 `update`）即默认此模式，不必再传 `DOMAIN`/`INGRESS_PORT`。
 
 首次进入用默认管理员账号登录（与国内共用同一套用户库，已有管理员可直接用国内账号登录）。
 
-> ⚠️ `10016` 是明文 HTTP：登录态/API key 跨网明文，要 HTTPS 走域名那条（见「十」）。
-> 公网端口由云分配，删除/重建规则会变；以云控制台实际 Endpoint 为准。
+> 旧的明文 IP 回退（`http://38.226.195.219:10016`）已不是默认：需在云控制台保留「端口映射 内网3000→公网10016」规则，并显式 `sudo DOMAIN= bash ~/deploy-newapi.sh update` 切回直连 3000 模式。明文跨网，仅临时排查用。
 
 ---
 
@@ -346,22 +346,20 @@ sudo docker exec -it new-api sh
 `019fbc8cdaf070d99719a571e184014b.ap-northeast-1.a8g1v3.xyz`，且云控制台已有一条「HTTP 代理 内网443→域名」
 规则（云端边缘做 TLS，**无需本机证书**）。两条路：
 
-### 路 A：云端 HTTP 代理（推荐，免装 Caddy、免证书）
+### 路 A：云端 HTTP 代理（默认，免装 Caddy、免证书）
 
-`DOMAIN` 非空 + `INGRESS_PORT=443`：new-api 直接监听宿主机 `443`（0.0.0.0），云端「HTTP 代理 内网443→域名」
-规则把 `https://域名` 的流量在边缘解 TLS 后转明文 HTTP 到本机 443 → new-api。无需本机证书、无需 Caddy。
+`DOMAIN` + `INGRESS_PORT=443` 已是脚本默认：new-api 直接监听宿主机 `443`（0.0.0.0），云端「HTTP 代理 内网443→域名」
+规则把 `https://域名` 的流量在边缘解 TLS 后转明文 HTTP 到本机 443 → new-api。无需本机证书、无需 Caddy。直接：
 
 ```bash
-sudo DOMAIN=019fbc8cdaf070d99719a571e184014b.ap-northeast-1.a8g1v3.xyz \
-     INGRESS_PORT=443 \
-     SESSION_SECRET='<同国内一致的随机串>' \
-     bash ~/deploy-newapi.sh update
+sudo bash ~/deploy-newapi.sh update
 ```
 
-部署后访问 `https://019fbc8cdaf070d99719a571e184014b.ap-northeast-1.a8g1v3.xyz`。
+（即默认 `DOMAIN=019fbc8cdaf070d99719a571e184014b.ap-northeast-1.a8g1v3.xyz INGRESS_PORT=443`；要换域名/端口再显式传 env 覆盖。）
+访问 `https://019fbc8cdaf070d99719a571e184014b.ap-northeast-1.a8g1v3.xyz`。
 
-> 切到路 A 后，本机不再发布 3000，之前那条「端口映射 内网3000→公网10016」规则会指向空端口（打不通），
-> 可在云控制台删除它（只保留域名这一条入口）。若想同时保留明文 IP 回退，别设 `INGRESS_PORT`、用路 B 或「六」直连。
+> 切到路 A（默认）后，本机不再发布 3000，之前那条「端口映射 内网3000→公网10016」规则会指向空端口（打不通），
+> 可在云控制台删除它（只保留域名这一条入口）。临时明文回退：`sudo DOMAIN= bash ~/deploy-newapi.sh update`（切回直连 3000 + 10016）。
 > `TRUSTED_PROXIES` 留空默认信任 loopback/RFC1918/docker 网段；若云端代理回源 IP 不在此范围
 > （登录跳 http、或日志里 client IP 全是代理 IP），显式设 `TRUSTED_PROXIES=<云端代理回源 IP/CIDR>`。
 
@@ -389,7 +387,7 @@ sudo DOMAIN=api-overseas.example.com \
 2. **3306/6379 只放行海外机 IP**：见第四节，**绝不对公网全开**。
 3. **跨公网加密**：用 SSH 隧道或 WireGuard 包住 DB+Redis 链路（见第十二节），可彻底关闭公网 3306/6379。
 4. **设 `SESSION_SECRET`**：两端同一随机串，避免重启会话失效、实现跨节点互认（见第二节）。
-5. **海外 3000 来源限制**：云安全组/防火墙限制 `3000` 来源，或前置反代 + HTTPS。
+5. **海外入口来源限制**：默认 `443` 经云 HTTP 代理（域名 HTTPS，来源由云控）；`DOMAIN=` 直连模式时为 `3000`，需云安全组/防火墙限制来源。
 6. **MySQL 建独立业务账号**：不用 `root` 连业务应用，`CREATE USER` + 最小权限授权（国内建号，海外 DSN 改用该号）。
 7. **定期备份**：业务数据在国内 MySQL `/data/mysql`，用 `mysqldump` 或卷快照备份。
 

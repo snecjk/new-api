@@ -40,7 +40,7 @@ set -euo pipefail
 # new-api 容器
 NEWAPI_IMAGE="${NEWAPI_IMAGE:-calciumion/new-api:latest}"
 NEWAPI_CONTAINER="${NEWAPI_CONTAINER:-new-api}"
-NEWAPI_PORT="${NEWAPI_PORT:-3000}"          # 海外对外服务端口（默认映射宿主机 3000）
+NEWAPI_PORT="${NEWAPI_PORT:-3000}"          # 直连模式（DOMAIN= 空时）宿主机端口；默认走 INGRESS_PORT=443，此项不生效
 
 # 持久化目录（海外宿主机；与国内 /data/new-api 同级，互不影响）
 NEWAPI_DATA_DIR="${NEWAPI_DATA_DIR:-/data/new-api/data}"
@@ -81,20 +81,23 @@ BATCH_UPDATE_ENABLED="${BATCH_UPDATE_ENABLED:-false}"
 TZ="${TZ:-UTC}"                       # 海外默认 UTC；要与国内日志对齐可改 Asia/Shanghai
 ERROR_LOG_ENABLED="${ERROR_LOG_ENABLED:-true}"
 
-# ---- 反代/会话（配合 HTTPS 域名；留空=本地 HTTP 直连 3000）----
-DOMAIN="${DOMAIN:-}"
+# ---- 反代/会话（HTTPS 域名）----
+# DOMAIN 默认填本海外机自带云域名。配合 INGRESS_PORT=443 + 云「HTTP 代理 内网443→域名」规则，
+# 云端边缘做 TLS、转明文到本机 443 → new-api（无需本机证书）。显式传 `DOMAIN=` 留空=本地 HTTP 直连 3000。
+# 用 `-`（非 `:-`）：空值是有效语义（关域名模式切回直连），故 `DOMAIN=` 不会回退到默认域名。
+DOMAIN="${DOMAIN-019fbc8cdaf070d99719a571e184014b.ap-northeast-1.a8g1v3.xyz}"
 # SESSION_COOKIE_SECURE / SESSION_COOKIE_TRUSTED_URL 不作为独立配置项：
 #   DOMAIN 非空时 create_container 自动强制注入（代码强绑定，缺一启动报错）。
 TRUSTED_PROXIES="${TRUSTED_PROXIES:-}"
-# DEBUG_BIND：留空=3000 映射宿主机 0.0.0.0（海外对外服务）；
-#             127.0.0.1=仅本机可访问 3000（调试用，不对外）
+# DEBUG_BIND：留空=交 DOMAIN/INGRESS_PORT 分支（默认 443）；127.0.0.1=仅本机可访问 3000（调试用，不对外）
 DEBUG_BIND="${DEBUG_BIND:-}"
 
 # INGRESS_PORT：DOMAIN 非空时的「外部/云反代」入口端口——new-api 直接监听宿主机该端口
 #               （0.0.0.0），供云端 HTTP 代理（域名 → 本机 INGRESS_PORT）回源，TLS 由云端
-#               边缘处理（无需本机证书）。留空=走本地 Caddy 容器反代（3000 仅 127.0.0.1）。
-#               例：INGRESS_PORT=443 配云「HTTP 代理 内网443→域名」规则，https://域名 直达 new-api。
-INGRESS_PORT="${INGRESS_PORT:-}"
+#               边缘处理（无需本机证书）。默认 443 配云「HTTP 代理 内网443→域名」规则。
+#               显式传 `INGRESS_PORT=` 留空=本地 Caddy 容器反代（3000 仅 127.0.0.1，需自备域名+证书，见「十」路 B）。
+#               用 `-`（非 `:-`）：空值有效（切 Caddy 模式），故 `INGRESS_PORT=` 不会回退到 443。
+INGRESS_PORT="${INGRESS_PORT-443}"
 
 # 启动后健康检查轮询参数（跨境连 DB 启动偏慢，默认给 80s）
 HEALTH_WAIT_ROUNDS="${HEALTH_WAIT_ROUNDS:-40}"
