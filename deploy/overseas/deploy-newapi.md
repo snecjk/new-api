@@ -7,6 +7,12 @@
 
 配套脚本：[`deploy-newapi.sh`](deploy-newapi.sh)
 
+> **镜像来源**：脚本不从 Docker Hub 拉公开镜像，而是**在海外机本地从你的 fork
+> `https://github.com/snecjk/new-api.git` 克隆源码并 `docker build`**（多阶段 Dockerfile：
+> bun 前端 + Go 后端，均在容器内完成）。每次 `update` 自动拉 fork 最新代码并重建，
+> 无需手动构建/推送镜像——你 fork 上提交的改动（如 `web/index.html` 的验证 meta 标签）
+> push 后，海外机一次 `update` 即生效。
+
 > 前置条件：国内服务器已按 [`deploy-docker-redis-mysql.md`](../china/deploy-docker-redis-mysql.md)
 > 部署好 `redis6` / `mysql8`，且已按 [`deploy-newapi.md`](../china/deploy-newapi.md) 跑起国内
 > new-api（master）。海外机已按 [`install-docker.md`](install-docker.md) 安装 Docker。
@@ -55,7 +61,7 @@ MySQL/Redis 默认**不走 TLS**，跨公网传输的是**明文**（含密码 `
 | 项 | 值 |
 |------|------|
 | 海外 new-api 容器名 | `new-api` |
-| 镜像 | `calciumion/new-api:latest` |
+| 镜像 | `snecjk/new-api:latest`（**海外机本地从 fork https://github.com/snecjk/new-api.git 构建**，不走 registry；换 tag 名用 `NEWAPI_IMAGE` 覆盖） |
 | 海外对外端口（宿主机） | `443`（`INGRESS_PORT=443` 默认，docker-proxy 绑 0.0.0.0:443；云端 HTTP 代理回源到此） |
 | 公网访问 | `https://019fbc8cdaf070d99719a571e184014b.ap-northeast-1.a8g1v3.xyz`（云「HTTP 代理 内网443→域名」规则 `518`，边缘 TLS，无需本机证书） |
 | 海外机公网 IP | `38.226.195.219`（SSH 端口 `10009`） |
@@ -142,7 +148,10 @@ new-api 的所有配额写入（token/user/channel 的 `quota`/`used_quota`/`req
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `NEWAPI_IMAGE` | `calciumion/new-api:latest` | 镜像地址 |
+| `NEWAPI_IMAGE` | `snecjk/new-api:latest` | 本地构建出的镜像 tag（不从 registry 拉；换名用本变量覆盖） |
+| `REPO_URL` | `https://github.com/snecjk/new-api.git` | fork 源码仓库（start/update 克隆/拉取并本地构建） |
+| `REPO_BRANCH` | `main` | fork 分支（须与 fork 默认分支一致） |
+| `SOURCE_DIR` | `/data/new-api/src` | fork 克隆目录（持久化，避免每次 update 全量重克隆） |
 | `NEWAPI_CONTAINER` | `new-api` | 容器名 |
 | `NEWAPI_PORT` | `3000` | 直连模式（`DOMAIN=` 空时）宿主机端口；默认走 `INGRESS_PORT=443`，此项不生效 |
 | `NEWAPI_DATA_DIR` | `/data/new-api/data` | 海外数据持久化目录 |
@@ -214,12 +223,12 @@ REDISCLI_AUTH='<密码>' redis-cli -h 140.143.183.34 -p 6379 --user root PING   
 ## 五、命令一览
 
 ```bash
-sudo bash deploy-newapi.sh start    # 首次部署 / 启动（含跨境连通性自检）
+sudo bash deploy-newapi.sh start    # 首次部署/启动（克隆 fork + 构建镜像 + 启动容器，含跨境自检）
 sudo bash deploy-newapi.sh stop     # 停止（不删容器，数据保留）
 sudo bash deploy-newapi.sh restart  # 重启（stop + start；复用旧容器，不改 env）
-sudo bash deploy-newapi.sh status    # 查看容器状态 + 接口健康 + 跨境连接目标
+sudo bash deploy-newapi.sh status    # 查看容器状态 + 接口健康 + 源码提交 + 跨境连接目标
 sudo bash deploy-newapi.sh logs      # 跟随查看日志（Ctrl-C 退出）
-sudo bash deploy-newapi.sh update    # 拉取最新镜像并重建容器（改配置后用它生效）
+sudo bash deploy-newapi.sh update    # 拉取 fork 最新代码 + 重新构建镜像 + 重建容器
 ```
 
 `start` 流程：
@@ -228,8 +237,9 @@ sudo bash deploy-newapi.sh update    # 拉取最新镜像并重建容器（改�
   > ⚠️ 自检「可达」仅代表 TCP 能通，**不代表已限定为本机 IP、也不代表已加密**——Docker 端口绕过
   > ufw/firewalld，须按「四」确认来源限制、按「十二」上加密隧道。脚本在密码仍为示例值时会额外告警。
 - 创建共享网络 `newapi-net`（已存在则跳过）
-- 创建 `/data/new-api/{data,logs}` 目录
-- 拉取 `calciumion/new-api:latest` 镜像
+- 创建 `/data/new-api/{data,logs,src}` 目录
+- 克隆 fork `https://github.com/snecjk/new-api.git`（分支 `main`）到 `SOURCE_DIR`（已存在则 `fetch + reset --hard` 拉最新代码）
+- 本地 `docker build -t snecjk/new-api:latest` 构建镜像（多阶段 Dockerfile：bun 前端 + Go 后端；首次约 3-8 分钟，后续有 Docker 层缓存更快）
 - 启动 new-api 容器（`--restart always`，角色 slave）
 - 轮询 `http://localhost:3000/api/status` 直到就绪（最多 80s）
 
@@ -244,8 +254,8 @@ sudo bash deploy-newapi.sh update    # 拉取最新镜像并重建容器（改�
 
 海外机：公网 `38.226.195.219`，SSH 端口 `10009`。
 
-> 前置：海外机须先装好 Docker。未装则先按 [`install-docker.md`](install-docker.md) 装好再继续，
-> 否则 `start` 会报 `未检测到 docker`。
+> 前置：海外机须先装好 **Docker + git**——运行 [`install-docker.sh`](install-docker.md) 即同时装好两者（Docker + git）。
+> 否则 `start` 会报 `未检测到 docker` 或 `未检测到 git`。
 
 ### 1. 上传脚本
 
@@ -295,7 +305,7 @@ sudo bash ~/deploy-newapi.sh stop
 sudo bash ~/deploy-newapi.sh start
 sudo bash ~/deploy-newapi.sh restart
 
-# 升级到最新镜像（数据由卷保留）
+# 升级：拉 fork 最新代码 + 重新构建镜像 + 重建容器（数据由卷保留）
 sudo bash ~/deploy-newapi.sh update
 
 # 改配置后生效（重建容器）

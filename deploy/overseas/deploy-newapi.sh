@@ -8,18 +8,22 @@
 # (NODE_TYPE=slave)，不跑后台迁移/调度/清理等任务（这些仍由国内 master 负责），
 # 仅对外提供 relay 服务并如实计费。
 #
+# 镜像来源：从你的 fork（REPO_URL，默认 https://github.com/snecjk/new-api.git）克隆源码，
+#           在海外机本地 docker build（多阶段 Dockerfile：bun 前端 + Go 后端，均在容器内完成）。
+#           不走 registry、无需手动构建推送镜像——每次 update 自动拉 fork 最新代码并重建。
+#
 # 用法（在海外服务器上）：
 #   sudo bash deploy-newapi.sh start    # 首次部署 / 启动
 #   sudo bash deploy-newapi.sh stop     # 停止（不删容器，数据保留）
 #   sudo bash deploy-newapi.sh restart  # 重启（stop + start；复用现有容器，不重建）
 #   sudo bash deploy-newapi.sh status   # 查看运行状态 + 接口健康 + 连接目标
 #   sudo bash deploy-newapi.sh logs     # 跟随查看日志（Ctrl-C 退出）
-#   sudo bash deploy-newapi.sh update   # 拉取最新镜像并重建容器（改配置后用它生效）
+#   sudo bash deploy-newapi.sh update   # 拉取 fork 最新代码 + 重新构建镜像 + 重建容器
 #
 # 连接拓扑：
 #   海外 new-api 容器 ──公网──▶ 国内 140.143.183.34:3306 (MySQL) / :6379 (Redis)
 #   （依赖容器在国内服务器的 docker 网络里，跨机走公网 IP+端口，不用容器名解析）
-#   数据持久化：海外宿主机 /data/new-api/{data,logs}
+#   数据持久化：海外宿主机 /data/new-api/{data,logs,src}（src=fork 源码克隆目录）
 #
 # 目标服务器（海外，本脚本运行机）：
 #   公网 IP    : 38.226.195.219      SSH 端口: 10009
@@ -37,10 +41,17 @@
 set -euo pipefail
 
 # ---------------- 可配置项（均支持环境变量覆盖）----------------
-# new-api 容器
-NEWAPI_IMAGE="${NEWAPI_IMAGE:-calciumion/new-api:latest}"
+# new-api 容器（镜像在海外机本地从 fork 源码构建，tag=NEWAPI_IMAGE；不从 registry 拉取、无需手动推镜像）
+# 若想换本地构建出的 tag 名，用 NEWAPI_IMAGE=<tag> 覆盖。
+NEWAPI_IMAGE="${NEWAPI_IMAGE:-snecjk/new-api:latest}"
 NEWAPI_CONTAINER="${NEWAPI_CONTAINER:-new-api}"
 NEWAPI_PORT="${NEWAPI_PORT:-3000}"          # 直连模式（DOMAIN= 空时）宿主机端口；默认走 INGRESS_PORT=443，此项不生效
+
+# ---- 源码（从你的 fork 克隆并在本机 docker build；每次 update 自动拉最新代码）----
+# 镜像不在 registry：start/update 会 git 拉取 fork 最新代码 → docker build → 重建容器。
+REPO_URL="${REPO_URL:-https://github.com/snecjk/new-api.git}"
+REPO_BRANCH="${REPO_BRANCH:-main}"             # 与 fork 默认分支一致（本仓库为 main）
+SOURCE_DIR="${SOURCE_DIR:-/data/new-api/src}"  # fork 克隆目录（持久化，避免每次 update 全量重克隆）
 
 # 持久化目录（海外宿主机；与国内 /data/new-api 同级，互不影响）
 NEWAPI_DATA_DIR="${NEWAPI_DATA_DIR:-/data/new-api/data}"
@@ -119,6 +130,11 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v git >/dev/null 2>&1; then
+  err "未检测到 git。本脚本从 fork 克隆源码并在本地构建镜像，需要 git：sudo apt-get install -y git（或 yum install -y git）。"
+  exit 1
+fi
+
 # 组装跨境连接串（指向国内公网 IP+端口，非容器名）
 sql_dsn="${MYSQL_USER}:${MYSQL_PASSWORD}@tcp(${CHINA_HOST}:${MYSQL_PORT})/${MYSQL_DB}"
 redis_conn="redis://${REDIS_USER}:${REDIS_PASSWORD}@${CHINA_HOST}:${REDIS_PORT}"
@@ -184,6 +200,31 @@ ensure_dirs() {
   mkdir -p "${NEWAPI_DATA_DIR}" "${NEWAPI_LOG_DIR}"
 }
 
+# ---------------- 源码与镜像构建 ----------------
+# 从 fork 克隆/拉取最新代码（镜像不在 registry 拉取，而是在本机从源码构建）
+ensure_source() {
+  if [[ -d "${SOURCE_DIR}/.git" ]]; then
+    log "拉取 fork 最新代码：${REPO_URL}（分支 ${REPO_BRANCH}）..."
+    git -C "${SOURCE_DIR}" fetch --quiet origin "+${REPO_BRANCH}:refs/remotes/origin/${REPO_BRANCH}"
+    git -C "${SOURCE_DIR}" reset --hard --quiet "origin/${REPO_BRANCH}"
+    git -C "${SOURCE_DIR}" clean -fd --quiet
+    ok "源码已更新到 origin/${REPO_BRANCH}：$(git -C "${SOURCE_DIR}" log -1 --format='%h %s' 2>/dev/null || echo '未知')"
+  else
+    log "首次克隆 fork：${REPO_URL}（分支 ${REPO_BRANCH}）→ ${SOURCE_DIR} ..."
+    mkdir -p "$(dirname "${SOURCE_DIR}")"
+    git clone --branch "${REPO_BRANCH}" --single-branch --quiet "${REPO_URL}" "${SOURCE_DIR}"
+    ok "源码已克隆：$(git -C "${SOURCE_DIR}" log -1 --format='%h %s' 2>/dev/null || echo '未知')"
+  fi
+}
+
+# 在海外机本地从 fork 源码构建镜像（多阶段 Dockerfile：bun 前端 + Go 后端，均在容器内完成）
+# 首次构建约 3-8 分钟（拉基础镜像 + go mod download + 编译）；后续有 Docker 层缓存，增量更快。
+build_image() {
+  log "本地构建镜像 ${NEWAPI_IMAGE}（源码：${SOURCE_DIR}，首次约需数分钟）..."
+  docker build -t "${NEWAPI_IMAGE}" "${SOURCE_DIR}"
+  ok "镜像 ${NEWAPI_IMAGE} 构建完成。"
+}
+
 # ---------------- 容器生命周期 ----------------
 container_exists() {
   docker ps -a --format '{{.Names}}' | grep -qx "${NEWAPI_CONTAINER}"
@@ -194,9 +235,7 @@ container_running() {
 }
 
 create_container() {
-  log "拉取 new-api 镜像 ${NEWAPI_IMAGE}..."
-  docker pull "${NEWAPI_IMAGE}"
-
+  # 镜像由 build_image 从 fork 源码本地构建（tag=NEWAPI_IMAGE），此处不 pull、直接 run。
   # 用数组承载 docker 参数，避免字符串拼接后未加引号展开把含空格/换行的值
   # （如 TRUSTED_PROXIES 的「逗号+空格」列表、base64 形式密钥）错误分词成多个 docker 参数。
   # args 恒非空（--name 等在前），故 "${args[@]}" 在 set -u 下安全，无需空数组守卫。
@@ -276,6 +315,8 @@ cmd_start() {
     log "容器已存在但处于停止状态，直接启动..."
     docker start "${NEWAPI_CONTAINER}" >/dev/null
   else
+    ensure_source
+    build_image
     create_container >/dev/null
   fi
 
@@ -318,6 +359,14 @@ cmd_status() {
     warn "new-api 容器不存在。"
     return 0
   fi
+  echo "---- 源码 ----"
+  echo "  仓库 : ${REPO_URL}（分支 ${REPO_BRANCH}）"
+  echo "  目录 : ${SOURCE_DIR}"
+  if [[ -d "${SOURCE_DIR}/.git" ]]; then
+    echo "  最新提交 : $(git -C "${SOURCE_DIR}" log -1 --format='%h %s (%cr)' 2>/dev/null || echo '未知')"
+  else
+    echo "  最新提交 : 未克隆（用 start/update 拉取）"
+  fi
   echo "---- 连接目标 ----"
   echo "  MySQL : ${MYSQL_USER}@${CHINA_HOST}:${MYSQL_PORT}/${MYSQL_DB}"
   echo "  Redis : ${REDIS_USER}@${CHINA_HOST}:${REDIS_PORT}"
@@ -349,15 +398,15 @@ cmd_logs() {
 }
 
 cmd_update() {
-  log "更新模式：拉取最新镜像并重建容器（配置/数据由卷保留；改配置后用它生效）..."
+  log "更新模式：拉取 fork 最新代码 → 重新构建镜像 → 重建容器（配置/数据由卷保留）..."
   preflight_remote
   ensure_network
   ensure_dirs
 
-  # 先拉镜像成功再移除旧容器：避免拉取失败（Docker Hub 限流/跨境抖动/镜像下架）时
-  # 把节点直接下线——旧容器一旦 rm，--restart 也救不回来。
-  log "拉取最新镜像 ${NEWAPI_IMAGE}..."
-  docker pull "${NEWAPI_IMAGE}"
+  # 先拉代码 + 构建成功再移除旧容器：构建失败（网络抖动 / 编译错误 / 基础镜像拉取失败）时
+  # 旧节点不下线——旧容器一旦 rm，--restart 也救不回来。
+  ensure_source
+  build_image
 
   if container_running || container_exists; then
     log "移除旧容器..."
@@ -366,7 +415,7 @@ cmd_update() {
 
   create_container >/dev/null
   wait_healthy || return 1
-  ok "new-api 已更新并启动。"
+  ok "new-api 已更新并启动（源码：origin/${REPO_BRANCH}）。"
 }
 
 usage() {
@@ -374,14 +423,14 @@ usage() {
 用法: sudo bash $0 <command>
 
 命令:
-  start     首次部署或启动 new-api 容器（含跨境连通性自检）
+  start     首次部署或启动（克隆 fork + 构建镜像 + 启动容器，含跨境连通性自检）
   stop      停止 new-api 容器（不删除，数据保留）
   restart   重启 new-api 容器（stop + start；复用旧容器，不改 env）
-  status    查看运行状态、接口健康与跨境连接目标
+  status    查看运行状态、接口健康、源码提交与跨境连接目标
   logs      跟随查看日志（Ctrl-C 退出）
-  update    拉取最新镜像并重建容器（改可配置项后用它生效）
+  update    拉取 fork 最新代码并重新构建镜像、重建容器（改配置/升级代码后用它生效）
 
-提示: 改任何可配置项后用 update（而非 restart）才会生效。
+提示: 改可配置项或升级 fork 代码后用 update（而非 restart）才会生效。
 EOF
 }
 

@@ -4,10 +4,11 @@
 #
 # 在海外服务器（Ubuntu/Debian，也兼容 RHEL/CentOS yum 系）上一键安装：
 #   1. Docker CE + docker compose 插件 + containerd + buildx
-#   2. 启动并开机自启 docker 守护进程
-#   3.（可选）把指定用户加入 docker 组（免 sudo 跑 docker 命令）
+#   2. git（deploy-newapi.sh 从 fork 克隆源码并本地 docker build，需要它）
+#   3. 启动并开机自启 docker 守护进程
+#   4.（可选）把指定用户加入 docker 组（免 sudo 跑 docker 命令）
 #
-# 与国内 install-docker-redis-mysql.sh 的区别：本脚本【只装 Docker，不装 Redis/MySQL】——
+# 与国内 install-docker-redis-mysql.sh 的区别：本脚本【装 Docker + git，不装 Redis/MySQL】——
 # 海外节点复用国内 140.143.183.34 上已部署好的 MySQL+Redis，本地不需要这两者。
 # 镜像源默认用官方 download.docker.com（海外东京可直连）；Docker Hub 不配镜像加速
 # （海外直连 Docker Hub 即可）。两者均可经环境变量改回国内镜像。
@@ -114,7 +115,25 @@ JSON
   fi
 }
 
-# ---------------- 2. 自检 ----------------
+# ---------------- 2. 安装 git ----------------
+# deploy-newapi.sh 从 fork 克隆源码并在本地 docker build，需要 git。已装则跳过。
+ensure_git() {
+  if command -v git >/dev/null 2>&1; then
+    ok "已检测到 git：$(git --version)"
+  else
+    log "安装 git（deploy-newapi.sh 从 fork 克隆源码需要）..."
+    if [[ "$PKG_MGR" == "apt" ]]; then
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -y
+      apt-get install -y git
+    else
+      yum install -y git
+    fi
+    ok "git 安装完成。"
+  fi
+}
+
+# ---------------- 3. 自检 ----------------
 verify() {
   log "自检中..."
   if docker version >/dev/null 2>&1; then
@@ -128,28 +147,36 @@ verify() {
   else
     warn "docker compose 插件未就绪（new-api 部署不强依赖，但建议补装 docker-compose-plugin）。"
   fi
+  if command -v git >/dev/null 2>&1; then
+    ok "git 就绪（$(git --version 2>/dev/null | head -1)），deploy-newapi.sh 可从 fork 克隆源码。"
+  else
+    warn "git 未就绪（deploy-newapi.sh 克隆 fork 源码需要；用 apt-get install -y git 补装）。"
+  fi
   # 端到端冒烟：拉极小镜像跑起来（确认 daemon + 镜像拉取 + 容器运行 全链路通）
   log "端到端冒烟：docker run --rm hello-world ..."
   if docker run --rm hello-world >/dev/null 2>&1; then
     ok "hello-world 运行成功：daemon + 镜像拉取 + 容器运行 全链路正常。"
   else
-    warn "hello-world 未跑通（多为 Docker Hub 拉取抖动；不影响后续部署，可用 docker pull calciumion/new-api:latest 单独验证）。"
+    warn "hello-world 未跑通（多为 Docker Hub 拉取抖动；不影响后续部署——deploy-newapi.sh 从 fork 克隆源码并本地构建，构建时才拉 oven/bun、golang 等基础镜像）。"
   fi
 }
 
 install_docker
+ensure_git
 verify
 
 cat <<EOF
 
-================ Docker 安装完成 ================
+================ Docker + git 安装完成 ================
 海外机：38.226.195.219（ap-northeast-1 东京，SSH 10009）
 Docker  : $(docker --version 2>/dev/null)
 Compose : $(docker compose version 2>/dev/null)
+Git     : $(git --version 2>/dev/null | head -1)
 apt 源  : ${DOCKER_APT_MIRROR}/linux/ubuntu
 Hub 加速: ${DOCKER_REGISTRY_MIRROR:-无（直连 Docker Hub）}
 
-下一步——上传并启动 new-api（复用国内 140.143.183.34 的 MySQL+Redis）：
+下一步——上传并启动 new-api（复用国内 140.143.183.34 的 MySQL+Redis；start 会从 fork
+克隆源码并本地 docker build，首次约 3-8 分钟，无需手动构建/推送镜像）：
   scp -P 10009 deploy/overseas/deploy-newapi.sh root@38.226.195.219:~/deploy-newapi.sh
   ssh -p 10009 root@38.226.195.219 'sudo bash ~/deploy-newapi.sh start'
 （详见 deploy-newapi.md）
