@@ -25,6 +25,24 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 		return nil
 	}
 
+	modelMapped := info.ChannelMeta != nil && info.ChannelMeta.IsModelMapped
+	// 模型映射后把响应 model 回写为客户端请求的原始模型名，避免泄漏上游真实模型；
+	// 用 map 回写保留上游 chunk 的其他字段
+	if modelMapped {
+		var chunkMap map[string]interface{}
+		if err := common.UnmarshalJsonStr(data, &chunkMap); err != nil {
+			return err
+		}
+		if chunkMap != nil {
+			chunkMap["model"] = info.OriginModelName
+			rewritten, mErr := common.Marshal(chunkMap)
+			if mErr != nil {
+				return mErr
+			}
+			return helper.StringData(c, string(rewritten))
+		}
+	}
+
 	if !forceFormat && !thinkToContent {
 		return helper.StringData(c, data)
 	}
@@ -253,6 +271,11 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 
+	// 模型映射后回写 model，forceFormat 重序列化路径同样生效
+	if info.ChannelMeta != nil && info.ChannelMeta.IsModelMapped {
+		simpleResponse.Model = info.OriginModelName
+	}
+
 	for _, choice := range simpleResponse.Choices {
 		if choice.FinishReason == constant.FinishReasonContentFilter {
 			common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "openai_finish_reason=content_filter")
@@ -292,6 +315,21 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
+		if info.IsModelMapped {
+			var bodyMap map[string]interface{}
+			err = common.Unmarshal(responseBody, &bodyMap)
+			if err != nil {
+				return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+			}
+			if bodyMap == nil {
+				return nil, types.NewOpenAIError(fmt.Errorf("mapped response body is not a JSON object"), types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+			}
+			bodyMap["model"] = info.OriginModelName
+			responseBody, err = common.Marshal(bodyMap)
+			if err != nil {
+				return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+			}
+		}
 		if usageModified {
 			var bodyMap map[string]interface{}
 			err = common.Unmarshal(responseBody, &bodyMap)
@@ -317,6 +355,20 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		claudeRespStr, err := common.Marshal(convertResult.Value)
 		if err != nil {
 			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+		}
+		if info.IsModelMapped {
+			var bodyMap map[string]interface{}
+			if err = common.Unmarshal(claudeRespStr, &bodyMap); err != nil {
+				return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+			}
+			if bodyMap == nil {
+				return nil, types.NewError(fmt.Errorf("mapped claude response body is not a JSON object"), types.ErrorCodeBadResponseBody)
+			}
+			bodyMap["model"] = info.OriginModelName
+			claudeRespStr, err = common.Marshal(bodyMap)
+			if err != nil {
+				return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+			}
 		}
 		responseBody = claudeRespStr
 	case types.RelayFormatGemini:

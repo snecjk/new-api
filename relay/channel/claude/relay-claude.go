@@ -83,6 +83,14 @@ func FormatClaudeResponseInfo(claudeResponse *dto.ClaudeResponse, oaiResponse *d
 	return relayconvert.FormatClaudeResponseInfo(claudeResponse, oaiResponse, claudeInfo)
 }
 
+// 模型映射后返回应展示给客户端的原始模型名；未映射时返回空串。
+func mappedResponseModel(info *relaycommon.RelayInfo) string {
+	if info.ChannelMeta != nil && info.ChannelMeta.IsModelMapped {
+		return info.OriginModelName
+	}
+	return ""
+}
+
 func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo, data string) *types.NewAPIError {
 	var claudeResponse dto.ClaudeResponse
 	err := common.UnmarshalJsonStr(data, &claudeResponse)
@@ -106,6 +114,13 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 			// message_start, 获取usage
 			if claudeResponse.Message != nil {
 				info.UpstreamModelName = claudeResponse.Message.Model
+				// 模型映射后回写 message_start.message.model，避免泄漏上游真实模型
+				if m := mappedResponseModel(info); m != "" {
+					claudeResponse.Message.Model = m
+					if rewritten, mErr := common.Marshal(&claudeResponse); mErr == nil {
+						data = string(rewritten)
+					}
+				}
 			}
 		} else if claudeResponse.Type == "message_delta" {
 			// 确保 message_delta 的 usage 包含完整的 input_tokens 和 cache 相关字段
@@ -118,6 +133,9 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		helper.ClaudeChunkData(c, claudeResponse, data)
 	} else if info.RelayFormat == types.RelayFormatOpenAI {
 		response := StreamResponseClaude2OpenAI(&claudeResponse)
+		if m := mappedResponseModel(info); m != "" {
+			response.Model = m
+		}
 
 		if !FormatClaudeResponseInfo(&claudeResponse, response, claudeInfo) {
 			return nil
@@ -181,7 +199,11 @@ func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, clau
 	} else if info.RelayFormat == types.RelayFormatOpenAI {
 		if info.ShouldIncludeUsage {
 			openAIUsage := buildOpenAIStyleUsageFromClaudeUsage(claudeInfo.Usage)
-			response := helper.GenerateFinalUsageResponse(claudeInfo.ResponseId, claudeInfo.Created, info.UpstreamModelName, openAIUsage)
+			finalModel := info.UpstreamModelName
+			if m := mappedResponseModel(info); m != "" {
+				finalModel = m
+			}
+			response := helper.GenerateFinalUsageResponse(claudeInfo.ResponseId, claudeInfo.Created, finalModel, openAIUsage)
 			err := helper.ObjectData(c, response)
 			if err != nil {
 				common.SysLog("send final response failed: " + err.Error())
@@ -242,6 +264,9 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
 		openaiResponse := ResponseClaude2OpenAI(&claudeResponse)
+		if m := mappedResponseModel(info); m != "" {
+			openaiResponse.Model = m
+		}
 		openaiResponse.Usage = buildOpenAIStyleUsageFromClaudeUsage(claudeInfo.Usage)
 		responseData, err = common.Marshal(openaiResponse)
 		if err != nil {
@@ -249,6 +274,16 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		}
 	case types.RelayFormatClaude:
 		responseData = data
+		// 模型映射后回写顶层 model，避免泄漏上游真实模型；map 回写保留上游其他字段
+		if m := mappedResponseModel(info); m != "" {
+			var bodyMap map[string]interface{}
+			if err := common.Unmarshal(data, &bodyMap); err == nil && bodyMap != nil {
+				bodyMap["model"] = m
+				if rewritten, mErr := common.Marshal(bodyMap); mErr == nil {
+					responseData = rewritten
+				}
+			}
+		}
 	}
 
 	if claudeResponse.Usage != nil && claudeResponse.Usage.ServerToolUse != nil && claudeResponse.Usage.ServerToolUse.WebSearchRequests > 0 {

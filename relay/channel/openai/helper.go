@@ -52,9 +52,21 @@ func handleClaudeFormat(c *gin.Context, data string, info *relaycommon.RelayInfo
 		return fmt.Errorf("expected Claude stream responses, got %T", result.Value)
 	}
 	for _, resp := range claudeResponses {
+		rewriteClaudeResponseModel(resp, info)
 		helper.ClaudeData(c, *resp)
 	}
 	return nil
+}
+
+// 模型映射后把 Claude 格式响应的 model 回写为客户端请求的原始模型名，避免泄漏上游真实模型。
+// 流式事件中 model 承载于 message_start.message.model（顶层无 model 字段）。
+func rewriteClaudeResponseModel(resp *dto.ClaudeResponse, info *relaycommon.RelayInfo) {
+	if info.ChannelMeta == nil || !info.ChannelMeta.IsModelMapped {
+		return
+	}
+	if resp.Type == "message_start" && resp.Message != nil {
+		resp.Message.Model = info.OriginModelName
+	}
 }
 
 func handleGeminiFormat(c *gin.Context, data string, info *relaycommon.RelayInfo) error {
@@ -166,6 +178,10 @@ func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStream
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
 		if info.ShouldIncludeUsage && !containStreamUsage {
+			// 模型映射后末尾 usage 帧同样回写原始模型名
+			if info.ChannelMeta != nil && info.ChannelMeta.IsModelMapped {
+				model = info.OriginModelName
+			}
 			response := helper.GenerateFinalUsageResponse(responseId, createAt, model, *usage)
 			response.SetSystemFingerprint(systemFingerprint)
 			helper.ObjectData(c, response)
@@ -192,6 +208,7 @@ func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStream
 			return
 		}
 		for _, resp := range claudeResponses {
+			rewriteClaudeResponseModel(resp, info)
 			_ = helper.ClaudeData(c, *resp)
 		}
 		info.ClaudeConvertInfo.Done = true
