@@ -24,7 +24,9 @@ set -euo pipefail
 
 # ---------------- 可配置项（均支持环境变量覆盖，便于上层编排脚本注入统一凭据与反代参数）----------------
 # new-api 容器
-NEWAPI_IMAGE="${NEWAPI_IMAGE:-calciumion/new-api:latest}"
+# 默认使用自建镜像（含本仓库定制代码；构建见 build-image.md）。
+# 首次部署尚未构建时，可临时 NEWAPI_IMAGE=calciumion/new-api:latest 覆盖用公共镜像。
+NEWAPI_IMAGE="${NEWAPI_IMAGE:-new-api-custom:latest}"
 NEWAPI_CONTAINER="${NEWAPI_CONTAINER:-new-api}"
 
 # 持久化目录（与 redis6/mysql8 的 /data/redis /data/mysql 同级）

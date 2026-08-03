@@ -16,7 +16,7 @@ new-api 容器与 `redis6` / `mysql8` 共享 docker 网络 `newapi-net`，DSN �
 | 项 | 值 |
 |------|------|
 | new-api 容器名 | `new-api` |
-| 镜像 | `calciumion/new-api:latest` |
+| 镜像 | `new-api-custom:latest`（自建，见 [`build-image.md`](build-image.md)；可用 `NEWAPI_IMAGE` 覆盖回 `calciumion/new-api:latest`） |
 | 对外端口 | `3000` |
 | 共享网络 | `newapi-net` |
 | 数据持久化 | `/data/new-api/data` → `/data` |
@@ -34,7 +34,7 @@ new-api 容器与 `redis6` / `mysql8` 共享 docker 网络 `newapi-net`，DSN �
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `NEWAPI_IMAGE` | `calciumion/new-api:latest` | 镜像地址 |
+| `NEWAPI_IMAGE` | `new-api-custom:latest` | 镜像地址（自建镜像，构建见 [`build-image.md`](build-image.md)） |
 | `NEWAPI_CONTAINER` | `new-api` | 容器名 |
 | `NEWAPI_PORT` | `3000` | 对外端口 |
 | `NEWAPI_DATA_DIR` | `/data/new-api/data` | 数据持久化目录 |
@@ -67,8 +67,7 @@ sudo bash deploy-newapi.sh update    # 拉取最新镜像并重建容器
 - 创建共享网络 `newapi-net`（已存在则跳过）
 - 把 `redis6` / `mysql8` 挂到 `newapi-net`（已挂则跳过）
 - 创建 `/data/new-api/{data,logs}` 目录
-- 拉取 `calciumion/new-api:latest` 镜像
-- 启动 new-api 容器（`--restart always`）
+- 启动 new-api 容器（镜像默认 `new-api-custom:latest`，需先按 [`build-image.md`](build-image.md) 构建；`--restart always`）
 - 轮询 `http://localhost:3000/api/status` 直到就绪
 
 重跑安全：容器已在运行则跳过，已存在但停止则 `docker start`，不存在则新建。
@@ -156,7 +155,9 @@ sudo docker exec -it new-api sh
 
 | 现象 | 排查 |
 |------|------|
-| `依赖容器 redis6 不存在` | 先运行 `install-docker-redis-mysql.sh` 部署 Redis/MySQL |
+| `image new-api-custom:latest not found` | 自建镜像未构建，先按 [`build-image.md`](build-image.md) 执行 `build-image.sh`；临时部署可 `NEWAPI_IMAGE=calciumion/new-api:latest` 覆盖 |
+| 模型映射不生效（上游报 model does not exist） | 全局「透传请求」与模型映射互斥：透传开启时原始请求体直发上游，映射被绕过。关闭：系统设置 → 模型与路由 → 全局设置 → 透传请求（`global.pass_through_request_enabled`） |
+| 依赖容器 redis6 不存在 | 先运行 `install-docker-redis-mysql.sh` 部署 Redis/MySQL |
 | `connection refused mysql8:3306` | 确认 `redis6`/`mysql8` 已挂到 `newapi-net`：`docker network inspect newapi-net`；未挂则重跑 `start` 触发 `connect_deps` |
 | `new-api 未在预期时间内就绪` | `sudo docker logs new-api --tail 100` 查看启动日志，常见为 DSN 密码不匹配或 MySQL 库未创建 |
 | Redis 认证失败 | 确认 `REDIS_PASSWORD` 与 `redis6` ACL 文件 `/data/redis/users.acl` 一致；ACL 用户用 `root` 或 `default`，密码相同 |
@@ -186,6 +187,7 @@ sudo docker exec -it new-api sh
 > `sudo docker restart caddy` 刷新 Caddy 缓存的上游 IP，否则会 502
 > （详见 [`deploy-domain.md`](deploy-domain.md) 第八节）。
 
-> 全链路部署按顺序执行三步：[`install-docker-redis-mysql.sh`](install-docker-redis-mysql.sh)
-> （Docker/Redis/MySQL）→ `deploy-newapi.sh`（new-api，反代场景带 `DOMAIN`）→
+> 全链路部署按顺序执行四步：[`install-docker-redis-mysql.sh`](install-docker-redis-mysql.sh)
+> （Docker/Redis/MySQL）→ [`build-image.sh`](build-image.md)（构建自建镜像）→
+> `deploy-newapi.sh`（new-api，反代场景带 `DOMAIN`）→
 > [`deploy-domain.sh`](deploy-domain.md)（Caddy HTTPS 反代）。

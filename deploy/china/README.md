@@ -1,15 +1,19 @@
 # deploy/china — 大陆服务器部署全套脚本与文档
 
 在大陆云服务器（Ubuntu/Debian）上部署 new-api 全链路：Docker + Redis + MySQL →
-new-api → Caddy 域名 HTTPS 反代。
+自建镜像 → new-api → Caddy 域名 HTTPS 反代。
 
 ## 部署顺序
 
 | 步骤 | 脚本 | 文档 | 产出 |
 |------|------|------|------|
 | 1 | [`install-docker-redis-mysql.sh`](install-docker-redis-mysql.sh) | [`deploy-docker-redis-mysql.md`](deploy-docker-redis-mysql.md) | Docker、`redis6`、`mysql8` 容器 |
-| 2 | [`deploy-newapi.sh`](deploy-newapi.sh) | [`deploy-newapi.md`](deploy-newapi.md) | `new-api` 容器，加入 `newapi-net` 网络 |
-| 3 | [`deploy-domain.sh`](deploy-domain.sh) | [`deploy-domain.md`](deploy-domain.md) | `caddy` 容器，域名 HTTPS 入口 |
+| 2 | [`build-image.sh`](build-image.sh) | [`build-image.md`](build-image.md) | 自建镜像 `new-api-custom:latest`（含本仓库定制代码） |
+| 3 | [`deploy-newapi.sh`](deploy-newapi.sh) | [`deploy-newapi.md`](deploy-newapi.md) | `new-api` 容器，加入 `newapi-net` 网络 |
+| 4 | [`deploy-domain.sh`](deploy-domain.sh) | [`deploy-domain.md`](deploy-domain.md) | `caddy` 容器，域名 HTTPS 入口 |
+
+> 步骤 2 说明：公共镜像 `calciumion/new-api:latest` 不含本仓库定制代码，生产部署应自建镜像；
+> 未构建时 `deploy-newapi.sh` 可用 `NEWAPI_IMAGE=calciumion/new-api:latest` 临时覆盖。
 
 ## 最终拓扑
 
