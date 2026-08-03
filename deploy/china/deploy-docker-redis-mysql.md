@@ -8,6 +8,10 @@
 
 配套脚本：[`install-docker-redis-mysql.sh`](install-docker-redis-mysql.sh)
 
+> 这是全链路部署的**第 1 步**（共 3 步），总览见 [`README.md`](README.md)。
+> 完成后继续：[`deploy-newapi.md`](deploy-newapi.md)（new-api）→
+> [`deploy-domain.md`](deploy-domain.md)（域名 HTTPS 反代）。
+
 ---
 
 ## 一、环境要求

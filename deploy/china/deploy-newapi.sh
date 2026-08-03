@@ -22,7 +22,7 @@
 
 set -euo pipefail
 
-# ---------------- 可配置项（均支持环境变量覆盖，便于 deploy-all.sh 注入统一凭据与反代参数）----------------
+# ---------------- 可配置项（均支持环境变量覆盖，便于上层编排脚本注入统一凭据与反代参数）----------------
 # new-api 容器
 NEWAPI_IMAGE="${NEWAPI_IMAGE:-calciumion/new-api:latest}"
 NEWAPI_CONTAINER="${NEWAPI_CONTAINER:-new-api}"

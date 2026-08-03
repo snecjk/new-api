@@ -177,9 +177,15 @@ sudo docker exec -it new-api sh
 | `DOMAIN` | 绑定域名，触发 HTTPS Secure cookie 模式 | 设了即走反代 HTTPS |
 | `SESSION_COOKIE_SECURE` | 启用 Secure Cookie + OriginGuard | `DOMAIN` 非空时自动 `true` |
 | `SESSION_COOKIE_TRUSTED_URL` | `https://<DOMAIN>`，与上者代码强绑定 | `DOMAIN` 非空时自动 |
-| `SESSION_SECRET` | 会话密钥，单机建议设、换机迁移必须复用同一值 | 由 `deploy-all.sh` 生成/传入 |
+| `SESSION_SECRET` | 会话密钥，单机建议设、换机迁移必须复用同一值 | 自生成随机串（如 `openssl rand -hex 32`）后传入 |
 | `TRUSTED_PROXIES` | 可信代理网段（可选；留空默认信任 loopback/RFC1918，含 docker `172.x`） | 留空用默认即可 |
 
 **端口策略**：`DOMAIN` 非空时，3000 默认**不再映射宿主机公网**（`-p` 移除），Caddy 容器在 `newapi-net` 内用容器名 `new-api:3000` 回源，公网无法直连 3000。调试可设 `DEBUG_BIND=127.0.0.1` 让服务器本机访问 3000。
 
-> 推荐：用 [`deploy-all.sh`](deploy-all.sh) 一条命令完成 Redis/MySQL + new-api + Caddy 域名反代的全链路部署（给 IP/账号/密码即可），无需手动 scp。手动 `start/stop/restart` 仅用于在服务器上单独维护 new-api。
+> ⚠️ 重建/更新 new-api 容器（`update`，或带 `DOMAIN` 重跑 `start`）后，需执行
+> `sudo docker restart caddy` 刷新 Caddy 缓存的上游 IP，否则会 502
+> （详见 [`deploy-domain.md`](deploy-domain.md) 第八节）。
+
+> 全链路部署按顺序执行三步：[`install-docker-redis-mysql.sh`](install-docker-redis-mysql.sh)
+> （Docker/Redis/MySQL）→ `deploy-newapi.sh`（new-api，反代场景带 `DOMAIN`）→
+> [`deploy-domain.sh`](deploy-domain.md)（Caddy HTTPS 反代）。

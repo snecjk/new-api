@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-# ---------------- 可配置项（均支持环境变量覆盖，便于 deploy-all.sh 注入统一凭据）----------------
+# ---------------- 可配置项（均支持环境变量覆盖，便于上层编排脚本注入统一凭据）----------------
 REDIS_PASSWORD="${REDIS_PASSWORD:-622851Tt.}"
 REDIS_USER="${REDIS_USER:-root}"            # Redis 6+ ACL 用户名
 MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-622851Tt.}"
