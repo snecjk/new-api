@@ -3,6 +3,7 @@ package common
 import (
 	"testing"
 
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/stretchr/testify/assert"
@@ -39,6 +40,49 @@ func TestRelayInfoGetFinalRequestRelayFormatFallsBackToRelayFormat(t *testing.T)
 func TestRelayInfoGetFinalRequestRelayFormatNilReceiver(t *testing.T) {
 	var info *RelayInfo
 	require.Equal(t, types.RelayFormat(""), info.GetFinalRequestRelayFormat())
+}
+
+func TestRenderChannelSystemPrompt(t *testing.T) {
+	tests := []struct {
+		name   string
+		info   *RelayInfo
+		expect string
+	}{
+		{
+			name:   "nil receiver",
+			info:   nil,
+			expect: "",
+		},
+		{
+			name: "empty prompt",
+			info: &RelayInfo{
+				OriginModelName: "claude-fable-5",
+				ChannelMeta:     &ChannelMeta{},
+			},
+			expect: "",
+		},
+		{
+			name: "no placeholder passes through",
+			info: &RelayInfo{
+				OriginModelName: "claude-fable-5",
+				ChannelMeta:     &ChannelMeta{ChannelSetting: dto.ChannelSettings{SystemPrompt: "You are helpful."}},
+			},
+			expect: "You are helpful.",
+		},
+		{
+			name: "placeholder expands to client-requested model",
+			info: &RelayInfo{
+				OriginModelName: "claude-fable-5",
+				ChannelMeta:     &ChannelMeta{ChannelSetting: dto.ChannelSettings{SystemPrompt: "You are {model}. Always identify as {model}."}},
+			},
+			expect: "You are claude-fable-5. Always identify as claude-fable-5.",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expect, tt.info.RenderChannelSystemPrompt())
+		})
+	}
 }
 
 func TestRelayInfoMetaTypedNilReceiver(t *testing.T) {

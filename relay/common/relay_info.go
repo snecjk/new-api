@@ -708,6 +708,20 @@ func (info *RelayInfo) GetOriginModelName() string {
 	return info.OriginModelName
 }
 
+// RenderChannelSystemPrompt returns the channel system prompt with the
+// {model} placeholder expanded to the client-requested model name, so a
+// channel mapping several model names can inject a per-request identity.
+func (info *RelayInfo) RenderChannelSystemPrompt() string {
+	if info == nil || info.ChannelMeta == nil {
+		return ""
+	}
+	prompt := info.ChannelSetting.SystemPrompt
+	if prompt == "" {
+		return ""
+	}
+	return strings.ReplaceAll(prompt, "{model}", info.OriginModelName)
+}
+
 func (info *RelayInfo) GetUpstreamModelName() string {
 	if info == nil || info.ChannelMeta == nil {
 		return ""
