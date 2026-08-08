@@ -154,9 +154,15 @@ ensure_source() {
     git -C "${SOURCE_DIR}" clean -fd --quiet
     ok "源码已更新到 origin/${REPO_BRANCH}：$(git -C "${SOURCE_DIR}" log -1 --format='%h %s' 2>/dev/null || echo '未知')"
   else
-    log "首次克隆 fork：${REPO_URL}（分支 ${REPO_BRANCH}）→ ${SOURCE_DIR} ..."
+    # 残留目录（上次克隆中断）先清理，否则 git clone 报 already exists
+    if [[ -d "${SOURCE_DIR}" ]]; then
+      warn "源码目录存在但不完整（上次克隆中断？），清理后重克隆：${SOURCE_DIR}"
+      rm -rf "${SOURCE_DIR}"
+    fi
+    # 浅克隆：国内网络访问 GitHub 不稳，全量克隆容易卡死
+    log "首次克隆 fork（浅克隆）：${REPO_URL}（分支 ${REPO_BRANCH}）→ ${SOURCE_DIR} ..."
     mkdir -p "$(dirname "${SOURCE_DIR}")"
-    git clone --branch "${REPO_BRANCH}" --single-branch --quiet "${REPO_URL}" "${SOURCE_DIR}"
+    git clone --branch "${REPO_BRANCH}" --single-branch --depth 1 --quiet "${REPO_URL}" "${SOURCE_DIR}"
     ok "源码已克隆：$(git -C "${SOURCE_DIR}" log -1 --format='%h %s' 2>/dev/null || echo '未知')"
   fi
 }

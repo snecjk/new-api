@@ -99,3 +99,4 @@ sudo docker restart caddy
 | `image new-api-custom:latest not found` | 未构建镜像就跑了 `deploy-newapi.sh`；先执行本教程第二步 |
 | 构建成功但功能没变 | 确认 `docker ps` 中 new-api 的 IMAGE 列是 `new-api-custom:latest`；`update` 后才生效 |
 | `update` 时 `git fetch` 超时/失败 | 国内网络访问 GitHub 不稳定；重试，或改用第四节兜底路径手动上传源码包 |
+| 首次克隆卡住很久 | 脚本已用浅克隆；`Ctrl-C` 后重跑 `update` 即可（残留目录自动清理）。仍不行就用兜底路径 |
