@@ -11,23 +11,31 @@
 #   sudo bash deploy-newapi.sh restart  # 重启（先 stop 再 start，重新应用配置）
 #   sudo bash deploy-newapi.sh status    # 查看运行状态
 #   sudo bash deploy-newapi.sh logs      # 查看日志（Ctrl-C 退出）
-#   sudo bash deploy-newapi.sh update    # 拉取最新镜像并重建容器
+#   sudo bash deploy-newapi.sh update    # 拉取 fork 最新代码 + 重新构建镜像 + 重建容器
+#
+# 镜像来源：start/update 自动克隆/拉取 fork（REPO_URL）最新代码，在本机 docker build
+#           （多阶段 Dockerfile）。不走 registry、不 docker pull —— 自建镜像不在任何
+#           registry，pull 必然 403。工作流：本地 push 到 GitHub main → 服务器跑 update。
 #
 # 连接拓扑：
 #   new-api 容器与 redis6 / mysql8 共享 docker 网络 newapi-net，
 #   DSN 中直接用容器名 redis6 / mysql8 解析，无需宿主机 IP。
-#   数据持久化：宿主机 /data/new-api/{data,logs}
+#   数据持久化：宿主机 /data/new-api/{data,logs,src}（src=fork 源码克隆目录）
 #
 # 需要以 root 身份运行（写 /data 目录、操作 docker）。
 
 set -euo pipefail
 
 # ---------------- 可配置项（均支持环境变量覆盖，便于上层编排脚本注入统一凭据与反代参数）----------------
-# new-api 容器
-# 默认使用自建镜像（含本仓库定制代码；构建见 build-image.md）。
-# 首次部署尚未构建时，可临时 NEWAPI_IMAGE=calciumion/new-api:latest 覆盖用公共镜像。
+# new-api 容器（镜像在本机从 fork 源码构建，tag=NEWAPI_IMAGE；不从 registry 拉取）
 NEWAPI_IMAGE="${NEWAPI_IMAGE:-new-api-custom:latest}"
 NEWAPI_CONTAINER="${NEWAPI_CONTAINER:-new-api}"
+
+# ---- 源码（从你的 fork 克隆并在本机 docker build；每次 update 自动拉最新代码）----
+# 国内网络访问 GitHub 可能不稳定；fetch 失败时用 build-image.md 的手动源码包方案兜底。
+REPO_URL="${REPO_URL:-https://github.com/snecjk/new-api.git}"
+REPO_BRANCH="${REPO_BRANCH:-main}"
+SOURCE_DIR="${SOURCE_DIR:-/data/new-api/src}"   # fork 克隆目录（持久化，避免每次 update 全量重克隆）
 
 # 持久化目录（与 redis6/mysql8 的 /data/redis /data/mysql 同级）
 NEWAPI_DATA_DIR="${NEWAPI_DATA_DIR:-/data/new-api/data}"
@@ -88,6 +96,11 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v git >/dev/null 2>&1; then
+  err "未检测到 git。本脚本从 fork 克隆源码并在本地构建镜像，需要 git：sudo apt-get install -y git（或 yum install -y git）。"
+  exit 1
+fi
+
 # 组装 new-api 连接串（容器名走共享网络解析）
 sql_dsn="${MYSQL_USER}:${MYSQL_PASSWORD}@tcp(${MYSQL_CONTAINER}:3306)/${MYSQL_DB}"
 redis_conn="redis://${REDIS_USER}:${REDIS_PASSWORD}@${REDIS_CONTAINER}:6379"
@@ -131,6 +144,31 @@ ensure_dirs() {
   mkdir -p "${NEWAPI_DATA_DIR}" "${NEWAPI_LOG_DIR}"
 }
 
+# ---------------- 源码与镜像构建 ----------------
+# 从 fork 克隆/拉取最新代码（镜像不在 registry 拉取，而是在本机从源码构建）
+ensure_source() {
+  if [[ -d "${SOURCE_DIR}/.git" ]]; then
+    log "拉取 fork 最新代码：${REPO_URL}（分支 ${REPO_BRANCH}）..."
+    git -C "${SOURCE_DIR}" fetch --quiet origin "+${REPO_BRANCH}:refs/remotes/origin/${REPO_BRANCH}"
+    git -C "${SOURCE_DIR}" reset --hard --quiet "origin/${REPO_BRANCH}"
+    git -C "${SOURCE_DIR}" clean -fd --quiet
+    ok "源码已更新到 origin/${REPO_BRANCH}：$(git -C "${SOURCE_DIR}" log -1 --format='%h %s' 2>/dev/null || echo '未知')"
+  else
+    log "首次克隆 fork：${REPO_URL}（分支 ${REPO_BRANCH}）→ ${SOURCE_DIR} ..."
+    mkdir -p "$(dirname "${SOURCE_DIR}")"
+    git clone --branch "${REPO_BRANCH}" --single-branch --quiet "${REPO_URL}" "${SOURCE_DIR}"
+    ok "源码已克隆：$(git -C "${SOURCE_DIR}" log -1 --format='%h %s' 2>/dev/null || echo '未知')"
+  fi
+}
+
+# 在本机从 fork 源码构建镜像（多阶段 Dockerfile：bun 前端 + Go 后端，均在容器内完成）
+# 首次构建约 5-15 分钟；后续有 BuildKit 层缓存，增量通常 1-3 分钟。
+build_image() {
+  log "本地构建镜像 ${NEWAPI_IMAGE}（源码：${SOURCE_DIR}，首次约需数分钟）..."
+  docker build --build-arg "GOPROXY=${GOPROXY:-https://goproxy.cn,direct}" -t "${NEWAPI_IMAGE}" "${SOURCE_DIR}"
+  ok "镜像 ${NEWAPI_IMAGE} 构建完成。"
+}
+
 # ---------------- 容器生命周期 ----------------
 container_exists() {
   docker ps -a --format '{{.Names}}' | grep -qx "${NEWAPI_CONTAINER}"
@@ -141,8 +179,7 @@ container_running() {
 }
 
 create_container() {
-  log "拉取 new-api 镜像 ${NEWAPI_IMAGE}..."
-  docker pull "${NEWAPI_IMAGE}"
+  # 镜像由 build_image 从 fork 源码本地构建（tag=NEWAPI_IMAGE），此处不 pull、直接 run。
 
   # 端口映射：默认不暴露宿主机(靠 newapi-net 容器名回源,公网不可直连)；
   # DEBUG_BIND=127.0.0.1 时仅本机可访问 3000(调试用)。
@@ -212,6 +249,8 @@ cmd_start() {
     log "容器已存在但处于停止状态，直接启动..."
     docker start "${NEWAPI_CONTAINER}" >/dev/null
   else
+    ensure_source
+    build_image
     create_container >/dev/null
   fi
 
@@ -272,10 +311,15 @@ cmd_logs() {
 }
 
 cmd_update() {
-  log "更新模式：拉取最新镜像并重建容器（配置/数据由卷保留）..."
+  log "更新模式：拉取 fork 最新代码 → 重新构建镜像 → 重建容器（配置/数据由卷保留）..."
   ensure_network
   connect_deps
   ensure_dirs
+
+  # 先拉代码 + 构建成功再移除旧容器：构建失败（国内网络抖动 / 编译错误）时
+  # 旧节点不下线——旧容器一旦 rm，--restart 也救不回来。
+  ensure_source
+  build_image
 
   if container_running || container_exists; then
     log "移除旧容器..."
@@ -284,7 +328,7 @@ cmd_update() {
 
   create_container >/dev/null
   wait_healthy || return 1
-  ok "new-api 已更新并启动。"
+  ok "new-api 已更新并启动（源码：origin/${REPO_BRANCH}）。"
 }
 
 usage() {
@@ -292,12 +336,12 @@ usage() {
 用法: sudo bash $0 <command>
 
 命令:
-  start     首次部署或启动 new-api 容器
+  start     首次部署或启动（克隆 fork + 构建镜像 + 启动容器）
   stop      停止 new-api 容器（不删除，数据保留）
   restart   重启 new-api 容器（stop + start，重新应用配置）
   status    查看容器运行状态与接口健康
   logs      跟随查看日志（Ctrl-C 退出）
-  update    拉取最新镜像并重建容器
+  update    拉取 fork 最新代码并重新构建镜像、重建容器（本地 push 后用它生效）
 EOF
 }
 

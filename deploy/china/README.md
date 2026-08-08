@@ -46,5 +46,8 @@
 
 - 重建/更新 `new-api` 容器后，执行 `sudo docker restart caddy` 刷新上游 IP 缓存，
   否则 502。
+- `deploy-newapi.sh update` 自动拉 fork 最新代码并在本机构建镜像（服务器需能连
+  GitHub）：本地 push 后，服务器跑 `update` + `restart caddy` 即完成更新；
+  GitHub 连不上时用 [`build-image.md`](build-image.md) 的手动兜底流程。
 - `mysql8` / `redis6` 容器承载全部业务数据，任何维护操作不得删除其容器或
   `/data/mysql`、`/data/redis` 目录。
