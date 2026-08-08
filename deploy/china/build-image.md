@@ -73,16 +73,15 @@ sudo bash ~/deploy-newapi.sh status   # 「最新提交」应为刚 push 的提�
 > 先把仓库里新版脚本覆盖上传一次（`scp deploy/china/deploy-newapi.sh ubuntu@140.143.183.34:~/`），
 > 此后每次更新只需上面两条命令。
 
-兜底路径（国内网络连不上 GitHub）：手动上传源码包再构建：
+兜底路径（国内网络连不上 GitHub）：源码包上传到 `SOURCE_DIR`，用离线模式更新：
 
 ```bash
 # 本地终端（仓库根目录）
 git archive HEAD --format=tar.gz --prefix=new-api-src/ -o /tmp/new-api-src.tar.gz
 scp /tmp/new-api-src.tar.gz ubuntu@140.143.183.34:~/
-# 服务器
-rm -rf ~/new-api-src5 && mkdir -p ~/new-api-src5 && tar xzf ~/new-api-src.tar.gz -C ~/new-api-src5 --strip-components=1
-sudo bash ~/new-api-src5/deploy/china/build-image.sh ~/new-api-src5 new-api-custom:latest
-sudo bash ~/deploy-newapi.sh update
+# 服务器（解压到 SOURCE_DIR，离线模式 update：构建 + 重建容器，不连 GitHub）
+sudo rm -rf /data/new-api/src && sudo mkdir -p /data/new-api/src && sudo tar xzf ~/new-api-src.tar.gz -C /data/new-api/src --strip-components=1
+sudo SOURCE_MODE=local bash ~/deploy-newapi.sh update
 sudo docker restart caddy
 ```
 

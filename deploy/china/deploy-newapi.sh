@@ -36,6 +36,9 @@ NEWAPI_CONTAINER="${NEWAPI_CONTAINER:-new-api}"
 REPO_URL="${REPO_URL:-https://github.com/snecjk/new-api.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 SOURCE_DIR="${SOURCE_DIR:-/data/new-api/src}"   # fork 克隆目录（持久化，避免每次 update 全量重克隆）
+# 源码模式：git= start/update 自动克隆/拉取 fork（默认）；
+#           local= 直接使用 SOURCE_DIR 里已有的源码（GitHub 不可达时用，源码经 scp 上传，见 build-image.md 兜底路径）
+SOURCE_MODE="${SOURCE_MODE:-git}"
 
 # 持久化目录（与 redis6/mysql8 的 /data/redis /data/mysql 同级）
 NEWAPI_DATA_DIR="${NEWAPI_DATA_DIR:-/data/new-api/data}"
@@ -147,6 +150,14 @@ ensure_dirs() {
 # ---------------- 源码与镜像构建 ----------------
 # 从 fork 克隆/拉取最新代码（镜像不在 registry 拉取，而是在本机从源码构建）
 ensure_source() {
+  if [[ "${SOURCE_MODE}" == "local" ]]; then
+    if [[ -f "${SOURCE_DIR}/Dockerfile" && -f "${SOURCE_DIR}/go.mod" ]]; then
+      log "SOURCE_MODE=local：直接使用现有源码 ${SOURCE_DIR}（不连 GitHub）。"
+      return 0
+    fi
+    err "SOURCE_MODE=local 但 ${SOURCE_DIR} 缺少 Dockerfile/go.mod；先上传源码包解压到该目录（见 build-image.md 兜底路径）。"
+    exit 1
+  fi
   if [[ -d "${SOURCE_DIR}/.git" ]]; then
     log "拉取 fork 最新代码：${REPO_URL}（分支 ${REPO_BRANCH}）..."
     git -C "${SOURCE_DIR}" fetch --quiet origin "+${REPO_BRANCH}:refs/remotes/origin/${REPO_BRANCH}"
