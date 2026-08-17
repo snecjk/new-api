@@ -39,7 +39,15 @@ www.litemall.asia, litemall.asia {
 	encode gzip zstd
 	reverse_proxy new-api:3000
 }
+
+cursor.litemall.asia {
+	encode gzip zstd
+	reverse_proxy cursor-api-proxy:8765
+}
 ```
+
+`CURSOR_DOMAIN` 默认 `cursor.litemall.asia`；设为空字符串可关闭 cursor 站点块。
+cursor-api-proxy / mihomo 的部署见独立仓库 `cursor-api-proxy/deploy/china`。
 
 Caddy 对 OpenAI 兼容接口所需的 SSE 流式响应(`text/event-stream`)与 WebSocket
 均自动适配,无需额外配置;反向代理默认透传 `X-Forwarded-For`/`X-Forwarded-Proto`,

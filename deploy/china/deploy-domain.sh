@@ -22,6 +22,9 @@ set -euo pipefail
 # ---------------- 可配置项 ----------------
 DOMAIN="${DOMAIN:-www.litemall.asia}"          # 主域名（证书 SAN 同时含裸域）
 APEX_DOMAIN="${APEX_DOMAIN:-litemall.asia}"    # 裸域，一并反代
+# cursor-api-proxy 仪表盘/API 域名（空=不写入 Caddyfile）
+CURSOR_DOMAIN="${CURSOR_DOMAIN:-cursor.litemall.asia}"
+CURSOR_UPSTREAM="${CURSOR_UPSTREAM:-cursor-api-proxy:8765}"
 CADDY_IMAGE="${CADDY_IMAGE:-caddy:2}"
 CADDY_CONTAINER="${CADDY_CONTAINER:-caddy}"
 CADDY_BASE_DIR="${CADDY_BASE_DIR:-/data/caddy}"
@@ -60,13 +63,30 @@ ensure_upstream() {
 
 write_caddyfile() {
   mkdir -p "${CADDY_BASE_DIR}/data" "${CADDY_BASE_DIR}/config"
+
+  local cursor_block=""
+  if [[ -n "${CURSOR_DOMAIN}" ]]; then
+    cursor_block="$(cat <<EOF
+
+${CURSOR_DOMAIN} {
+	encode gzip zstd
+	reverse_proxy ${CURSOR_UPSTREAM}
+}
+EOF
+)"
+  fi
+
   cat > "${CADDY_BASE_DIR}/Caddyfile" <<EOF
 ${DOMAIN}, ${APEX_DOMAIN} {
 	encode gzip zstd
 	reverse_proxy ${UPSTREAM}
 }
+${cursor_block}
 EOF
   ok "Caddyfile 已写入 ${CADDY_BASE_DIR}/Caddyfile"
+  if [[ -n "${CURSOR_DOMAIN}" ]]; then
+    ok "已包含 cursor 站点：https://${CURSOR_DOMAIN} → ${CURSOR_UPSTREAM}"
+  fi
 }
 
 container_exists()  { docker ps -a --format '{{.Names}}' | grep -qx "${CADDY_CONTAINER}"; }
@@ -204,8 +224,10 @@ usage() {
   update    拉取最新镜像并重建容器
 
 环境变量:
-  DOMAIN        主域名（默认 www.litemall.asia）
-  APEX_DOMAIN   裸域（默认 litemall.asia）
+  DOMAIN          主域名（默认 www.litemall.asia）
+  APEX_DOMAIN     裸域（默认 litemall.asia）
+  CURSOR_DOMAIN   cursor-api-proxy 域名（默认 cursor.litemall.asia；空=不反代）
+  CURSOR_UPSTREAM 默认 cursor-api-proxy:8765
 EOF
 }
 

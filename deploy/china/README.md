@@ -10,7 +10,10 @@
 | 1 | [`install-docker-redis-mysql.sh`](install-docker-redis-mysql.sh) | [`deploy-docker-redis-mysql.md`](deploy-docker-redis-mysql.md) | Docker、`redis6`、`mysql8` 容器 |
 | 2 | [`build-image.sh`](build-image.sh) | [`build-image.md`](build-image.md) | 自建镜像 `new-api-custom:latest`（含本仓库定制代码） |
 | 3 | [`deploy-newapi.sh`](deploy-newapi.sh) | [`deploy-newapi.md`](deploy-newapi.md) | `new-api` 容器，加入 `newapi-net` 网络 |
-| 4 | [`deploy-domain.sh`](deploy-domain.sh) | [`deploy-domain.md`](deploy-domain.md) | `caddy` 容器，域名 HTTPS 入口 |
+| 4 | [`deploy-domain.sh`](deploy-domain.sh) | [`deploy-domain.md`](deploy-domain.md) | `caddy` 容器，域名 HTTPS 入口（含可选 `cursor.litemall.asia`） |
+| 5 | cursor-api-proxy 仓库 [`deploy/china`](https://github.com/snecjk/cursor-api-proxy/tree/main/deploy/china) | 同目录 README | 专用 `mihomo` + `cursor-api-proxy`（仅该容器全局代理出网） |
+
+> 步骤 5 不在本仓库执行：把 `cursor-api-proxy/deploy/china` 同步到服务器后，按该 README 先 `deploy-mihomo.sh` 再 `deploy-cursor-proxy.sh`，最后 `deploy-domain.sh restart` 写入 cursor 站点。
 
 > 步骤 2 说明：公共镜像 `calciumion/new-api:latest` 不含本仓库定制代码，生产部署应自建镜像；
 > 未构建时 `deploy-newapi.sh` 可用 `NEWAPI_IMAGE=calciumion/new-api:latest` 临时覆盖。
@@ -20,8 +23,8 @@
 ```
 浏览器 ──80/443──▶ caddy（Let's Encrypt 自动证书、HTTP→HTTPS）
                      │ newapi-net（docker 内容器名互通）
-                     ▼
-                  new-api:3000 ──▶ mysql8 / redis6
+                     ├─▶ new-api:3000 ──▶ mysql8 / redis6
+                     └─▶ cursor-api-proxy:8765 ──HTTP_PROXY──▶ mihomo:7890（仅此路径）
 ```
 
 ## 端口与数据一览
