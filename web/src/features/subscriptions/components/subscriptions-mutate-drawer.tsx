@@ -317,6 +317,50 @@ export function SubscriptionsMutateDrawer({
                 )}
               />
 
+              <FormField
+                control={form.control}
+                name='billing_group'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Subscription Billing Group')}</FormLabel>
+                    <Select
+                      items={[
+                        { value: '__all__', label: t('All Groups') },
+                        ...groupOptions.map((g) => ({ value: g, label: g })),
+                      ]}
+                      onValueChange={(value) =>
+                        field.onChange(value === '__all__' ? '' : value)
+                      }
+                      value={field.value || '__all__'}
+                    >
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue placeholder={t('All Groups')} />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent alignItemWithTrigger={false}>
+                        <SelectGroup>
+                          <SelectItem value='__all__'>
+                            {t('All Groups')}
+                          </SelectItem>
+                          {groupOptions.map((group) => (
+                            <SelectItem key={group} value={group}>
+                              {group}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <FormDescription>
+                      {t(
+                        'Limits subscription billing to this group, not API key access.'
+                      )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
               <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
                 <FormField
                   control={form.control}

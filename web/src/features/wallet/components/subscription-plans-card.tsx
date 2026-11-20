@@ -52,6 +52,7 @@ import {
 } from '@/features/subscriptions/api'
 import { SubscriptionPurchaseDialog } from '@/features/subscriptions/components/dialogs/subscription-purchase-dialog'
 import { formatDuration, formatResetPeriod } from '@/features/subscriptions/lib'
+import { subscriptionBillingGroupLabel } from '@/features/subscriptions/lib/billing-group'
 import type {
   PlanRecord,
   UserSubscriptionRecord,
@@ -546,6 +547,7 @@ export function SubscriptionPlansCard({
                 plan.upgrade_group
                   ? `${t('Upgrade Group')}: ${plan.upgrade_group}`
                   : null,
+                `${t('Subscription Billing Group')}: ${subscriptionBillingGroupLabel(plan.billing_group, t)}`,
               ].filter(Boolean) as string[]
 
               return (

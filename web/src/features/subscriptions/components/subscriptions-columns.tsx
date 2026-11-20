@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { type ColumnDef } from '@tanstack/react-table'
+import type { ColumnDef } from '@tanstack/react-table'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -27,6 +27,7 @@ import { TableId } from '@/components/table-id'
 import { formatQuota } from '@/lib/format'
 
 import { formatDuration, formatResetPeriod } from '../lib'
+import { subscriptionBillingGroupLabel } from '../lib/billing-group'
 import type { PlanRecord } from '../types'
 import { DataTableRowActions } from './data-table-row-actions'
 
@@ -173,6 +174,24 @@ export function useSubscriptionsColumns(): ColumnDef<PlanRecord>[] {
           )
         },
         size: 150,
+      },
+      {
+        id: 'billing_group',
+        header: t('Subscription Billing Group'),
+        meta: { mobileHidden: true },
+        cell: ({ row }) => {
+          const group = row.original.plan.billing_group
+          return group ? (
+            <BadgeCell>
+              <GroupBadge group={group} />
+            </BadgeCell>
+          ) : (
+            <span className='text-muted-foreground'>
+              {subscriptionBillingGroupLabel(group, t)}
+            </span>
+          )
+        },
+        size: 140,
       },
       {
         id: 'upgrade_group',

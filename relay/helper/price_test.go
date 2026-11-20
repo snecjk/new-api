@@ -16,6 +16,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestHandleGroupRatioResolvesAutoBeforeSubscriptionBilling(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("auto_group", "gpt-stable")
+	info := &relaycommon.RelayInfo{UsingGroup: "auto", UserGroup: "default"}
+	HandleGroupRatio(c, info)
+	require.Equal(t, "gpt-stable", info.UsingGroup)
+}
+
 func TestModelPriceHelperTieredUsesPreloadedRequestInput(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

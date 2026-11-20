@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 	"gorm.io/gorm"
 )
 
@@ -186,6 +187,13 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 		return
 	}
 	req.Plan.UpgradeGroup = strings.TrimSpace(req.Plan.UpgradeGroup)
+	req.Plan.BillingGroup = strings.TrimSpace(req.Plan.BillingGroup)
+	if req.Plan.BillingGroup != "" {
+		if _, ok := ratio_setting.GetGroupRatioCopy()[req.Plan.BillingGroup]; !ok {
+			common.ApiErrorMsg(c, "计费分组不存在")
+			return
+		}
+	}
 	if req.Plan.UpgradeGroup != "" {
 		if _, ok := ratio_setting.GetGroupRatioCopy()[req.Plan.UpgradeGroup]; !ok {
 			common.ApiErrorMsg(c, "升级分组不存在")
@@ -224,10 +232,18 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		return
 	}
 	var req AdminUpsertSubscriptionPlanRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil {
 		common.ApiErrorMsg(c, "参数错误")
 		return
 	}
+	var raw struct {
+		Plan map[string]any `json:"plan"`
+	}
+	if err := c.ShouldBindBodyWith(&raw, binding.JSON); err != nil {
+		common.ApiErrorMsg(c, "参数错误")
+		return
+	}
+	_, billingGroupProvided := raw.Plan["billing_group"]
 	if strings.TrimSpace(req.Plan.Title) == "" {
 		common.ApiErrorMsg(c, "套餐标题不能为空")
 		return
@@ -260,6 +276,13 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		return
 	}
 	req.Plan.UpgradeGroup = strings.TrimSpace(req.Plan.UpgradeGroup)
+	req.Plan.BillingGroup = strings.TrimSpace(req.Plan.BillingGroup)
+	if req.Plan.BillingGroup != "" {
+		if _, ok := ratio_setting.GetGroupRatioCopy()[req.Plan.BillingGroup]; !ok {
+			common.ApiErrorMsg(c, "计费分组不存在")
+			return
+		}
+	}
 	if req.Plan.UpgradeGroup != "" {
 		if _, ok := ratio_setting.GetGroupRatioCopy()[req.Plan.UpgradeGroup]; !ok {
 			common.ApiErrorMsg(c, "升级分组不存在")
@@ -301,6 +324,9 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 			"quota_reset_period":         req.Plan.QuotaResetPeriod,
 			"quota_reset_custom_seconds": req.Plan.QuotaResetCustomSeconds,
 			"updated_at":                 common.GetTimestamp(),
+		}
+		if billingGroupProvided {
+			updateMap["billing_group"] = req.Plan.BillingGroup
 		}
 		if req.Plan.AllowBalancePay != nil {
 			updateMap["allow_balance_pay"] = *req.Plan.AllowBalancePay

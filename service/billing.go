@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -39,7 +40,39 @@ func PreConsumeBilling(c *gin.Context, preConsumedQuota int, relayInfo *relaycom
 		return apiErr
 	}
 	relayInfo.Billing = session
+	relayInfo.BilledGroup = relayInfo.UsingGroup
 	return nil
+}
+
+// RebindBillingForGroupRetry re-evaluates subscription eligibility against the
+// concrete group selected for this attempt, before any upstream request is sent.
+func RebindBillingForGroupRetry(c *gin.Context, relayInfo *relaycommon.RelayInfo, quota int) *types.NewAPIError {
+	if relayInfo == nil || relayInfo.Billing == nil {
+		return nil
+	}
+	session, ok := relayInfo.Billing.(*BillingSession)
+	if !ok {
+		return types.NewErrorWithStatusCode(fmt.Errorf("unsupported billing session on group retry"), types.ErrorCodeUpdateDataError, http.StatusInternalServerError, types.ErrOptionWithSkipRetry())
+	}
+	if err := session.RefundForGroupRetry(); err != nil {
+		return types.NewErrorWithStatusCode(fmt.Errorf("refund before group retry: %w", err), types.ErrorCodeUpdateDataError, http.StatusInternalServerError, types.ErrOptionWithSkipRetry())
+	}
+	relayInfo.Billing = nil
+	relayInfo.BillingSource = ""
+	relayInfo.BilledGroup = ""
+	relayInfo.SubscriptionId = 0
+	relayInfo.SubscriptionPreConsumed = 0
+	relayInfo.SubscriptionPostDelta = 0
+	relayInfo.SubscriptionPlanId = 0
+	relayInfo.SubscriptionPlanTitle = ""
+	relayInfo.FinalPreConsumedQuota = 0
+	// The original request ID remains the log correlation ID. Each pre-consume
+	// attempt needs its own idempotency key because a refunded key cannot be reused.
+	requestID := relayInfo.RequestId
+	relayInfo.RequestId = requestID + "-retry-" + common.NewRequestId()
+	err := PreConsumeBilling(c, quota, relayInfo)
+	relayInfo.RequestId = requestID
+	return err
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -122,6 +123,35 @@ func (s *BillingSession) Refund(c *gin.Context) {
 	})
 }
 
+// RefundForGroupRetry releases the previous attempt before a retry selects a
+// different routed group. Unlike Refund, this must finish before re-billing.
+func (s *BillingSession) RefundForGroupRetry() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.settled || s.fundingSettled {
+		return fmt.Errorf("cannot change billing group after settlement")
+	}
+	if s.refunded {
+		return nil
+	}
+	if err := s.funding.Refund(); err != nil {
+		return err
+	}
+	// Wallet refunds are not idempotent; never invoke them again if a later step fails.
+	s.refunded = true
+	if s.extraReserved > 0 && s.funding.Source() == BillingSourceSubscription && s.relayInfo.SubscriptionId > 0 {
+		if err := model.PostConsumeUserSubscriptionDelta(s.relayInfo.SubscriptionId, -int64(s.extraReserved)); err != nil {
+			return err
+		}
+	}
+	if s.tokenConsumed > 0 && !s.relayInfo.IsPlayground {
+		if err := model.IncreaseTokenQuota(s.relayInfo.TokenId, s.relayInfo.TokenKey, s.tokenConsumed); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // NeedsRefund 返回是否存在需要退还的预扣状态。
 func (s *BillingSession) NeedsRefund() bool {
 	s.mu.Lock()
@@ -215,8 +245,8 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 		}
 		// TODO: model 层应定义哨兵错误（如 ErrNoActiveSubscription），用 errors.Is 替代字符串匹配
 		errMsg := err.Error()
-		if strings.Contains(errMsg, "no active subscription") || strings.Contains(errMsg, "subscription quota insufficient") {
-			return types.NewErrorWithStatusCode(fmt.Errorf("订阅额度不足或未配置订阅: %s", errMsg), types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+		if errors.Is(err, model.ErrNoEligibleSubscription) || strings.Contains(errMsg, "subscription quota insufficient") {
+			return types.NewErrorWithStatusCode(fmt.Errorf("订阅额度不足或未配置订阅: %w", err), types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 		}
 		return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
 	}
@@ -387,6 +417,7 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 				requestId: relayInfo.RequestId,
 				userId:    relayInfo.UserId,
 				modelName: relayInfo.OriginModelName,
+				group:     relayInfo.UsingGroup,
 				amount:    subConsume,
 			},
 		}
@@ -400,13 +431,31 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 
 	switch pref {
 	case "subscription_only":
-		return trySubscription()
+		hasEligible, err := model.HasEligibleUserSubscription(relayInfo.UserId, relayInfo.UsingGroup)
+		if err != nil {
+			return nil, types.NewError(err, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
+		}
+		if !hasEligible {
+			return tryWallet()
+		}
+		session, apiErr := trySubscription()
+		if apiErr != nil && errors.Is(apiErr.Err, model.ErrNoEligibleSubscription) {
+			return tryWallet()
+		}
+		return session, apiErr
 	case "wallet_only":
 		return tryWallet()
 	case "wallet_first":
 		session, err := tryWallet()
 		if err != nil {
 			if err.GetErrorCode() == types.ErrorCodeInsufficientUserQuota {
+				hasEligible, checkErr := model.HasEligibleUserSubscription(relayInfo.UserId, relayInfo.UsingGroup)
+				if checkErr != nil {
+					return nil, types.NewError(checkErr, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
+				}
+				if !hasEligible {
+					return nil, err
+				}
 				return trySubscription()
 			}
 			return nil, err
@@ -415,7 +464,7 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 	case "subscription_first":
 		fallthrough
 	default:
-		hasSub, subCheckErr := model.HasActiveUserSubscription(relayInfo.UserId)
+		hasSub, subCheckErr := model.HasEligibleUserSubscription(relayInfo.UserId, relayInfo.UsingGroup)
 		if subCheckErr != nil {
 			return nil, types.NewError(subCheckErr, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
 		}
@@ -424,9 +473,12 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 		}
 		session, apiErr := trySubscription()
 		if apiErr != nil {
+			if errors.Is(apiErr.Err, model.ErrNoEligibleSubscription) {
+				return tryWallet()
+			}
 			if apiErr.GetErrorCode() == types.ErrorCodeInsufficientUserQuota {
 				// 仅当用户的活跃订阅允许钱包回退时才回退到钱包，否则返回订阅额度不足错误
-				allowOverflow, overflowErr := model.UserActiveSubscriptionsAllowWalletOverflow(relayInfo.UserId)
+				allowOverflow, overflowErr := model.UserActiveSubscriptionsAllowWalletOverflow(relayInfo.UserId, relayInfo.UsingGroup)
 				if overflowErr != nil {
 					return nil, types.NewError(overflowErr, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
 				}
