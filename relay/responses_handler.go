@@ -120,6 +120,19 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	}
 
 	var httpResp *http.Response
+
+	attempt := info.BeginTraceAttempt(c.Request.Context())
+	defer func() {
+		if p := recover(); p != nil {
+			info.FinishTraceAttempt(attempt, nil, fmt.Errorf("panic"))
+			panic(p)
+		}
+		var traceErr error
+		if newAPIError != nil {
+			traceErr = newAPIError
+		}
+		info.FinishTraceAttempt(attempt, nil, traceErr)
+	}()
 	resp, err := adaptor.DoRequest(c, info, requestBody)
 	if err != nil {
 		return types.NewOpenAIError(err, types.ErrorCodeDoRequestFailed, http.StatusInternalServerError)
@@ -144,6 +157,9 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 		return newAPIError
 	}
+
+	attempt.RecordUsage(usage.(*dto.Usage))
+	info.FinishTraceAttempt(attempt, nil, nil)
 
 	usageDto := usage.(*dto.Usage)
 	if info.RelayMode == relayconstant.RelayModeResponsesCompact {

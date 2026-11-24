@@ -199,7 +199,20 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 	}
 
 	statusCodeMappingStr := c.GetString("status_code_mapping")
+
 	var httpResp *http.Response
+	attempt := info.BeginTraceAttempt(c.Request.Context())
+	defer func() {
+		if p := recover(); p != nil {
+			info.FinishTraceAttempt(attempt, nil, fmt.Errorf("panic"))
+			panic(p)
+		}
+		var traceErr error
+		if newAPIError != nil {
+			traceErr = newAPIError
+		}
+		info.FinishTraceAttempt(attempt, nil, traceErr)
+	}()
 	resp, err := adaptor.DoRequest(c, info, requestBody)
 	if err != nil {
 		return types.NewOpenAIError(err, types.ErrorCodeDoRequestFailed, http.StatusInternalServerError)
@@ -222,6 +235,9 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 		return newAPIError
 	}
+
+	attempt.RecordUsage(usage.(*dto.Usage))
+	info.FinishTraceAttempt(attempt, nil, nil)
 
 	service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
 	return nil

@@ -157,7 +157,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 
 			lastStreamData = data
-			collectStreamFunctionCallNames(data, seenStreamToolCalls, &streamFunctionCallNames)
+			collectStreamFunctionCallNames(data, seenStreamToolCalls, &streamFunctionCallNames, info)
 			if err := processTokenData(info.RelayMode, data, &responseTextBuilder, &toolCount); err != nil {
 				logger.LogError(c, "error processing stream token data: "+err.Error())
 				sr.Error(err)
@@ -212,11 +212,15 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	return usage, nil
 }
 
-func collectStreamFunctionCallNames(data string, seen map[string]struct{}, names *[]string) {
+func collectStreamFunctionCallNames(data string, seen map[string]struct{}, names *[]string, infos ...*relaycommon.RelayInfo) {
 	var streamResponse dto.ChatCompletionsStreamResponse
 	if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
 		return
 	}
+	if len(infos) > 0 {
+		infos[0].ObserveResponse(&streamResponse)
+	}
+
 	for _, choice := range streamResponse.Choices {
 		for i, tc := range choice.Delta.ToolCalls {
 			name := tc.Function.Name
@@ -275,6 +279,8 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	if info.ChannelMeta != nil && info.ChannelMeta.IsModelMapped {
 		simpleResponse.Model = info.OriginModelName
 	}
+
+	info.ObserveResponse(&simpleResponse)
 
 	for _, choice := range simpleResponse.Choices {
 		if choice.FinishReason == constant.FinishReasonContentFilter {

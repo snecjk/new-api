@@ -23,6 +23,7 @@ import (
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/oauth"
+	"github.com/QuantumNous/new-api/pkg/observability"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/relay"
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
@@ -231,6 +232,14 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		common.SysError(fmt.Sprintf("server forced to shutdown: %v", err))
 	}
+	// Langfuse 导出器在 HTTP 排空后以独立超时上下文完成 flush/关闭
+	if langfuseExporter != nil && langfuseExporter.IsEnabled() {
+		flushCtx, flushCancel := context.WithTimeout(context.Background(), langfuseExporter.ShutdownTimeout())
+		defer flushCancel()
+		if err := langfuseExporter.Shutdown(flushCtx); err != nil {
+			common.SysError("langfuse exporter shutdown incomplete")
+		}
+	}
 	// 内存中的看板数据保存入库，避免重启丢失未落库数据 (issue #5679)
 	if common.DataExportEnabled {
 		model.SaveQuotaDataCache()
@@ -280,6 +289,9 @@ func InjectGoogleAnalytics() {
 	placeholder := []byte("<!--Google Analytics-->\n")
 	indexPage = bytes.ReplaceAll(indexPage, placeholder, analyticsInject)
 }
+
+// langfuseExporter 是全局 Langfuse Cloud 追踪导出器（未启用时为 nil）。
+var langfuseExporter *observability.Exporter
 
 func InitResources() error {
 	// Initialize resources here if needed
@@ -340,6 +352,15 @@ func InitResources() error {
 	}
 
 	perfmetrics.Init()
+
+	// 初始化 Langfuse Cloud 追踪导出器（可选，默认关闭）。
+	// 初始化失败不中断网关启动：配置缺失或格式非法时降级关闭导出。
+	exp, obsInitErr := observability.New(observability.LoadFromEnv())
+	langfuseExporter = exp
+	observability.SetGlobalExporter(exp)
+	if obsInitErr != nil {
+		common.SysError("langfuse observability init failed (tracing disabled): " + obsInitErr.Error())
+	}
 
 	// 启动系统监控
 	common.StartSystemMonitor()

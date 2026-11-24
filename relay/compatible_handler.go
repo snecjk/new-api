@@ -187,6 +187,19 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	}
 
 	var httpResp *http.Response
+
+	attempt := info.BeginTraceAttempt(c.Request.Context())
+	defer func() {
+		if p := recover(); p != nil {
+			info.FinishTraceAttempt(attempt, nil, fmt.Errorf("panic"))
+			panic(p)
+		}
+		var traceErr error
+		if newAPIError != nil {
+			traceErr = newAPIError
+		}
+		info.FinishTraceAttempt(attempt, nil, traceErr)
+	}()
 	resp, err := adaptor.DoRequest(c, info, requestBody)
 	if err != nil {
 		return types.NewOpenAIError(err, types.ErrorCodeDoRequestFailed, http.StatusInternalServerError)
@@ -211,6 +224,9 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		service.ResetStatusCode(newApiErr, statusCodeMappingStr)
 		return newApiErr
 	}
+
+	attempt.RecordUsage(usage.(*dto.Usage))
+	info.FinishTraceAttempt(attempt, nil, nil)
 
 	var containAudioTokens = usage.(*dto.Usage).CompletionTokenDetails.AudioTokens > 0 || usage.(*dto.Usage).PromptTokensDetails.AudioTokens > 0
 	var containsAudioRatios = ratio_setting.ContainsAudioRatio(info.OriginModelName) || ratio_setting.ContainsAudioCompletionRatio(info.OriginModelName)

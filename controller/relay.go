@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/observability"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/relay"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -77,7 +78,26 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	var (
 		newAPIError *types.NewAPIError
 		ws          *websocket.Conn
+		rootSpan    *observability.RootSpan
+		relayInfo   *relaycommon.RelayInfo
 	)
+
+	// 若追踪已启用且协议/操作受支持，则为本次请求创建根 span（采样决策由 OTEL SDK 在根创建时一次性做出）。
+	// 入口前的鉴权/限流拒绝不进入根 span（由中间件已在 relay 入口前拦截）。
+	if observability.IsEnabled() && isSupportedTraceOperation(relayFormat, c.Request.URL.Path) {
+		ctx := c.Request.Context()
+		ctx, rootSpan = observability.StartRootSpan(observability.GlobalTracer("new-api.relay"), c.Request.Context(),
+			observability.RootSpanStart{
+				RequestID:       requestId,
+				Protocol:        string(relayFormat),
+				CaptureContent:  observability.GlobalConfig().CaptureContent,
+				MaxContentBytes: observability.GlobalConfig().MaxContentBytes,
+				Environment:     observability.GlobalEnvironment(),
+			})
+		if rootSpan != nil {
+			c.Request = c.Request.WithContext(ctx)
+		}
+	}
 
 	if relayFormat == types.RelayFormatOpenAIRealtime {
 		var err error
@@ -107,6 +127,21 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				})
 			}
 		}
+
+	}()
+
+	defer func() {
+		if p := recover(); p != nil {
+			rootSpan.End(observability.OutcomeError, errors.New("panic"))
+			panic(p)
+		}
+		if newAPIError != nil {
+			rootSpan.End(observability.OutcomeError, newAPIError)
+		} else if relayInfo != nil && relayInfo.TraceAttempt != nil {
+			relayInfo.TraceAttempt.EndRoot(rootSpan)
+		} else {
+			rootSpan.End(observability.OutcomeOk, nil)
+		}
 	}()
 
 	request, err := helper.GetAndValidateRequest(c, relayFormat)
@@ -120,12 +155,13 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		return
 	}
 
-	relayInfo, err := relaycommon.GenRelayInfo(c, relayFormat, request, ws)
+	relayInfo, err = relaycommon.GenRelayInfo(c, relayFormat, request, ws)
 	if err != nil {
 		newAPIError = types.NewError(err, types.ErrorCodeGenRelayInfoFailed)
 		return
 	}
 
+	rootSpan.SetRequestMetadata(relayInfo.OriginModelName, relayInfo.IsStream)
 	needSensitiveCheck := setting.ShouldCheckPromptSensitive()
 	needCountToken := constant.CountToken
 	// Avoid building huge CombineText (strings.Join) when token counting and sensitive check are both disabled.
@@ -262,6 +298,22 @@ func addUsedChannel(c *gin.Context, channelId int) {
 	useChannel := c.GetStringSlice("use_channel")
 	useChannel = append(useChannel, fmt.Sprintf("%d", channelId))
 	c.Set("use_channel", useChannel)
+}
+
+// Trace only the text operations owned by this relay entry point.
+func isSupportedTraceOperation(f types.RelayFormat, path string) bool {
+	switch f {
+	case types.RelayFormatOpenAI:
+		return relayconstant.Path2RelayMode(path) == relayconstant.RelayModeChatCompletions
+	case types.RelayFormatOpenAIResponses, types.RelayFormatOpenAIResponsesCompaction:
+		return true
+	case types.RelayFormatClaude:
+		return strings.HasSuffix(path, "/messages")
+	case types.RelayFormatGemini:
+		return strings.HasSuffix(path, ":generateContent") || strings.HasSuffix(path, ":streamGenerateContent")
+	default:
+		return false
+	}
 }
 
 func fastTokenCountMetaForPricing(request dto.Request) *types.TokenCountMeta {

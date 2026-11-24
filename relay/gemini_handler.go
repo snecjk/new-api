@@ -175,6 +175,18 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		requestBody = body
 	}
 
+	attempt := info.BeginTraceAttempt(c.Request.Context())
+	defer func() {
+		if p := recover(); p != nil {
+			info.FinishTraceAttempt(attempt, nil, fmt.Errorf("panic"))
+			panic(p)
+		}
+		var traceErr error
+		if newAPIError != nil {
+			traceErr = newAPIError
+		}
+		info.FinishTraceAttempt(attempt, nil, traceErr)
+	}()
 	resp, err := adaptor.DoRequest(c, info, requestBody)
 	if err != nil {
 		logger.LogError(c, "Do gemini request failed: "+err.Error())
@@ -200,6 +212,9 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		service.ResetStatusCode(openaiErr, statusCodeMappingStr)
 		return openaiErr
 	}
+
+	attempt.RecordUsage(usage.(*dto.Usage))
+	info.FinishTraceAttempt(attempt, nil, nil)
 
 	service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
 	return nil
