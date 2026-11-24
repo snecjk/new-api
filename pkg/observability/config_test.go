@@ -121,17 +121,22 @@ func TestConfigValidateSampleRate(t *testing.T) {
 
 func TestConfigValidateContentBytes(t *testing.T) {
 	base := validConfig()
-	for _, b := range []int{MinContentBytes, MaxContentBytes} {
+	for _, b := range []int{MinContentBytes, 65536, 1048576, 33554432} {
 		cfg := base
 		cfg.MaxContentBytes = b
 		require.NoError(t, cfg.Validate(), "bytes %d", b)
 	}
-	for _, b := range []int{MinContentBytes - 1, MaxContentBytes + 1} {
+	for _, b := range []int{MinContentBytes - 1, 33554433} {
 		cfg := base
 		cfg.MaxContentBytes = b
 		err := cfg.Validate()
 		require.Error(t, err, "bytes %d", b)
 	}
+}
+
+func TestLoadLongContextContentLimit(t *testing.T) {
+	t.Setenv("LANGFUSE_MAX_CONTENT_BYTES", "33554432")
+	assert.Equal(t, 32<<20, LoadFromEnv().MaxContentBytes)
 }
 
 func TestConfigValidateTimeouts(t *testing.T) {

@@ -57,7 +57,7 @@
 | `LANGFUSE_ENVIRONMENT` | `production`；受限字符串，演示配置用 `development` |
 | `LANGFUSE_SAMPLE_RATE` | `1`；有限数，闭区间 `[0,1]`；生产可调整为 `0.1` |
 | `LANGFUSE_CAPTURE_CONTENT` | `false` |
-| `LANGFUSE_MAX_CONTENT_BYTES` | `8192`；输入/输出各自上限；有效范围 `256..65536` |
+| `LANGFUSE_MAX_CONTENT_BYTES` | `8192`；输入/输出各自上限；有效范围 `256..33554432` |
 | `LANGFUSE_EXPORT_TIMEOUT_SECONDS` | `5`；有效范围 `1..30`，覆盖本次导出及其重试 |
 | `LANGFUSE_FLUSH_TIMEOUT_SECONDS` | `5`；有效范围 `1..30` |
 
@@ -111,9 +111,11 @@ Langfuse 可按识别模型计算自己的参考成本，但该值不代表 new-
 
 SSE 只向固定上限的字节缓冲追加允许文本；达到上限后停止收集并保持转发。采用 UTF-8 安全截断，记录 `input_truncated/output_truncated`；序列化使用有界文本片段，再由 SDK 发送，不对整个请求调用 Marshal 后截断。排除思考/工具参数/任意 metadata、媒体字节、base64、资源 URL 和原始 upstream 错误体。opt-in 不能保证自由文本自动脱敏，文档必须明确。
 
+百万 token 长上下文使用输入/输出各 32 MiB 的部署预算，并由真实 tokenizer 的百万 token 文本验证正文完整性；字节预算不是所有模型的统一 token 上限。大正文部署建议设置导出和 flush 超时为 30 秒。
+
 ### 7. 资源与故障隔离
 
-batch processor 初始建议队列 512 spans、批次 64、间隔 1 秒，队列满非阻塞丢弃。另对 span 设置属性数/值长度硬上限（例如 64 个属性，单个值上限结合编码后正文预算），防止只有队列数量受限而单 span 无界。正文 raw 字节限制和 JSON 转义膨胀后的最终 attribute 限制都必须覆盖，截断标记不能丢失。
+batch processor 默认队列 512 spans、批次 64、间隔 1 秒；显式开启正文且上限大于 64 KiB 时使用 32 spans 队列、单 span 批次，避免扩大正文上限时同时放大批次体积和排队内存。预算超过 1 MiB 后使用 gzip，并把队列缩小为 max(2, floor(64 MiB / (2 × 正文预算)))；32 MiB 时容量为 2（包含正在导出的 span），至少容纳一次请求的根和子。队列满非阻塞丢弃。另对 span 设置属性数/值长度硬上限（例如 64 个属性，单个值上限结合编码后正文预算），防止只有队列数量受限而单 span 无界。正文 raw 字节限制和 JSON 转义膨胀后的最终 attribute 限制都必须覆盖，截断标记不能丢失。
 
 后台 exporter 使用独立 HTTP transport；不复用携带上游密钥的 relay client 或依赖模型重试设置。错误 hook 只打印本地受控原因和状态码，不能直接记录可能含 URL/header/payload 的原始 exporter error。对连续失败限频诊断；使用带丢弃计数的 processor/exporter 观测或 SDK 相应接口暴露队列满丢弃，禁止每次请求另开 goroutine 执行同步 HTTP 上报。
 

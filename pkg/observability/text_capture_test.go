@@ -1,9 +1,13 @@
 package observability
 
 import (
+	"strings"
 	"testing"
+	"unicode/utf8"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestTextCaptureDisabled(t *testing.T) {
@@ -48,4 +52,45 @@ func TestTextCaptureEscapedBudget(t *testing.T) {
 	c.Append("<>&你好")
 	assert.Equal(t, "<>", c.Text())
 	assert.True(t, c.Truncated())
+}
+
+func TestTextCaptureOneMiB(t *testing.T) {
+	for _, tc := range []struct {
+		name, text string
+	}{
+		{"ascii", strings.Repeat("x", 1048574)},
+		{"utf8", strings.Repeat("你", 349524)},
+		{"escaped", strings.Repeat("<", 174762)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := NewTextCapture(true, 1048576)
+			c.Append(tc.text)
+			assert.False(t, c.Truncated())
+			assert.Equal(t, tc.text, c.Text())
+			c.Append("你好")
+			assert.True(t, c.Truncated())
+			assert.Equal(t, tc.text, c.Text())
+			assert.True(t, utf8.ValidString(c.Text()))
+			encoded, err := common.Marshal(c.Text())
+			require.NoError(t, err)
+			assert.LessOrEqual(t, len(encoded), 1048576)
+		})
+	}
+}
+
+func TestTextCaptureLongContextBudget(t *testing.T) {
+	const limit = 32 << 20
+	// Each pair is four UTF-8 bytes, but nine bytes after JSON escaping.
+	text := strings.Repeat("<你", (limit-2)/9)
+	c := NewTextCapture(true, limit)
+	c.Append(text)
+	require.False(t, c.Truncated())
+	require.True(t, c.Text() == text)
+	c.Append("你好")
+	assert.True(t, c.Truncated())
+	assert.True(t, c.Text() == text)
+	assert.True(t, utf8.ValidString(c.Text()))
+	encoded, err := common.Marshal(c.Text())
+	require.NoError(t, err)
+	assert.Len(t, encoded, limit)
 }

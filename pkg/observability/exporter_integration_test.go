@@ -2,6 +2,7 @@ package observability
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"io"
@@ -14,9 +15,11 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tiktoken-go/tokenizer"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -106,6 +109,153 @@ func TestOTLPRejectsCredentialRedirect(t *testing.T) {
 	assert.Zero(t, destinationCalls.Load())
 }
 
+func TestOTLPOneMiBInputOutput(t *testing.T) {
+	cfg := validConfig()
+	cfg.CaptureContent = true
+	cfg.MaxContentBytes = 1048576
+	requests := make(chan []byte, 2)
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return nil, err
+		}
+		requests <- body
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})}
+	exp, err := newExporter(cfg, client)
+	require.NoError(t, err)
+	ctx, root := StartRootSpan(exp.Tracer("test"), context.Background(), RootSpanStart{CaptureContent: true, MaxContentBytes: cfg.MaxContentBytes})
+	a := BeginAttempt(ctx, exp.Tracer("test"), GenSpanStart{}, nil)
+	require.NotNil(t, a)
+	input, output := strings.Repeat("i", 1048574), strings.Repeat("o", 1048574)
+	a.input.Append(input)
+	a.output.Append(output)
+	a.End(false, "", false, nil)
+	a.EndRoot(root)
+	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, exp.Shutdown(shutdown))
+	require.Len(t, requests, 2, "large observations must export separately")
+	for range 2 {
+		var payload collector.ExportTraceServiceRequest
+		require.NoError(t, proto.Unmarshal(<-requests, &payload))
+		require.Len(t, payload.ResourceSpans, 1)
+		spans := payload.ResourceSpans[0].ScopeSpans[0].Spans
+		require.Len(t, spans, 1)
+		values := map[string]string{}
+		for _, attr := range spans[0].Attributes {
+			values[attr.Key] = attr.Value.GetStringValue()
+		}
+		assert.Equal(t, input, values[AttrInput])
+		assert.Equal(t, output, values[AttrOutput])
+	}
+}
+
+func TestOTLPMillionTokenInput(t *testing.T) {
+	const tokens = 1 << 20
+	codec, err := tokenizer.Get(tokenizer.Cl100kBase)
+	require.NoError(t, err)
+	input := strings.Repeat(" telecommunications", tokens)
+	count, err := codec.Count(input)
+	require.NoError(t, err)
+	require.Equal(t, tokens, count)
+	output := strings.Repeat("答", 400000)
+	cfg := validConfig()
+	cfg.CaptureContent = true
+	cfg.MaxContentBytes = 32 << 20
+	requests := make(chan []byte, 2)
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Header.Get("Content-Encoding") != "gzip" {
+			return nil, errors.New("large content must use gzip")
+		}
+		reader, err := gzip.NewReader(r.Body)
+		if err != nil {
+			return nil, err
+		}
+		defer reader.Close()
+		body, err := io.ReadAll(reader)
+		if err != nil {
+			return nil, err
+		}
+		requests <- body
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})}
+	exp, err := newExporter(cfg, client)
+	require.NoError(t, err)
+	ctx, root := StartRootSpan(exp.Tracer("test"), context.Background(), RootSpanStart{CaptureContent: true, MaxContentBytes: cfg.MaxContentBytes})
+	request := &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: input}}}
+	a := BeginAttempt(ctx, exp.Tracer("test"), GenSpanStart{}, request)
+	require.NotNil(t, a)
+	a.ObserveResponse(&dto.OpenAITextResponse{Choices: []dto.OpenAITextResponseChoice{{Message: dto.Message{Role: "assistant", Content: output}}}})
+	require.False(t, a.input.Truncated())
+	require.False(t, a.output.Truncated())
+	a.End(false, "", false, nil)
+	a.EndRoot(root)
+	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	require.NoError(t, exp.Shutdown(shutdown))
+	require.Zero(t, exp.FailureCount())
+	require.Zero(t, exp.DropCount())
+	require.Len(t, requests, 2)
+	for range 2 {
+		var payload collector.ExportTraceServiceRequest
+		require.NoError(t, proto.Unmarshal(<-requests, &payload))
+		require.Len(t, payload.ResourceSpans, 1)
+		spans := payload.ResourceSpans[0].ScopeSpans[0].Spans
+		require.Len(t, spans, 1)
+		values := map[string]string{}
+		for _, attr := range spans[0].Attributes {
+			values[attr.Key] = attr.Value.GetStringValue()
+		}
+		assert.True(t, values[AttrInput] == input+"\n", "million-token input changed")
+		assert.True(t, values[AttrOutput] == output, "large output changed")
+		assert.Empty(t, values[AttrMetadata+".input_truncated"])
+		assert.Empty(t, values[AttrMetadata+".output_truncated"])
+	}
+}
+
+func TestLargeCaptureQueueDropsWithoutBlocking(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		limit, capacity int
+	}{
+		{"one_mib", 1 << 20, 32},
+		{"million_tokens", 32 << 20, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.CaptureContent = true
+			cfg.MaxContentBytes = tc.limit
+			entered, release := make(chan struct{}), make(chan struct{})
+			var first atomic.Bool
+			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				if first.CompareAndSwap(false, true) {
+					close(entered)
+				}
+				<-release
+				return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(""))}, nil
+			})}
+			exp, err := newExporter(cfg, client)
+			require.NoError(t, err)
+			_, root := StartRootSpan(exp.Tracer("test"), context.Background(), RootSpanStart{})
+			root.End(OutcomeOk, nil)
+			select {
+			case <-entered:
+			case <-time.After(time.Second):
+				close(release)
+				t.Fatal("export did not start")
+			}
+			for range tc.capacity {
+				_, root := StartRootSpan(exp.Tracer("test"), context.Background(), RootSpanStart{})
+				root.End(OutcomeOk, nil)
+			}
+			assert.EqualValues(t, 1, exp.DropCount())
+			close(release)
+			require.NoError(t, exp.Shutdown(context.Background()))
+		})
+	}
+}
+
 func TestOTLPFailuresBoundedAndSanitized(t *testing.T) {
 	for _, status := range []int{401, 403, 429, 500, 503} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
@@ -164,7 +314,7 @@ func (*blockedExporter) Shutdown(context.Context) error { return nil }
 
 func TestQueueAdmissionDropsWithoutBlocking(t *testing.T) {
 	sink := &blockedExporter{entered: make(chan struct{}), release: make(chan struct{})}
-	p := &boundedProcessor{}
+	p := &boundedProcessor{maxPending: 512}
 	p.next = sdktrace.NewBatchSpanProcessor(&diagnosticExporter{SpanExporter: sink, processor: p}, sdktrace.WithMaxQueueSize(512), sdktrace.WithMaxExportBatchSize(1))
 	span := tracetest.SpanStub{SpanContext: trace.NewSpanContext(trace.SpanContextConfig{TraceID: trace.TraceID{1}, SpanID: trace.SpanID{1}, TraceFlags: trace.FlagsSampled}), Attributes: []attribute.KeyValue{attribute.String("test", "bounded")}}.Snapshot()
 	p.OnEnd(span)

@@ -24,7 +24,7 @@ new-api 通过 OpenTelemetry Go SDK + OTLP/HTTP 直连美国区 `https://us.clou
 | `LANGFUSE_ENVIRONMENT` | `production` | 部署环境标识，演示可用 `development` |
 | `LANGFUSE_SAMPLE_RATE` | `1` | 有限数，闭区间 `[0,1]`；生产可调整为 `0.1` |
 | `LANGFUSE_CAPTURE_CONTENT` | `false` | 是否捕获输入/输出文本，默认关闭 |
-| `LANGFUSE_MAX_CONTENT_BYTES` | `8192` | 有效范围 `[256, 65536]`，输入/输出各自上限 |
+| `LANGFUSE_MAX_CONTENT_BYTES` | `8192` | 有效范围 `[256, 33554432]`，输入/输出各自上限 |
 | `LANGFUSE_EXPORT_TIMEOUT_SECONDS` | `5` | 有效范围 `[1, 30]` |
 | `LANGFUSE_FLUSH_TIMEOUT_SECONDS` | `5` | 有效范围 `[1, 30]`，退出时 flush 截止时间 |
 
@@ -110,12 +110,18 @@ LANGFUSE_MAX_CONTENT_BYTES=8192
 - 未支持的 opaque 内容标记 `capture_status=unsupported`，仍输出允许的元数据。
 - 输入取自验证后的客户端请求；输出取自主要 OpenAI/Responses/Claude/Gemini 解析器，不复原其他供应商的私有结构。Responses Input 仅对已知消息/文本块做常量空间扫描与有界解码；compact 的 opaque 内容不上传。文本上限同时约束 UTF-8 字节和 JSON 转义后的属性值。
 
+百万 token 长上下文可配置输入、输出各 32 MiB（LANGFUSE_MAX_CONTENT_BYTES=33554432），通用默认仍为 8192。该预算按 UTF-8 和 JSON 转义后的字节计算，token 与字节的换算随分词器和文本变化，并非 32 MiB 固定等于 1M token。使用真实分词器确认的百万 token 文本做完整性验收；超过字节预算仍安全截断。配置仅影响新请求，不回填历史记录。大正文建议导出及退出 flush 超时均为 30 秒。
+
+正文上限超过 1 MiB 时通过 gzip 导出，每批一个 observation；队列按输入/输出预算缩小，在 32 MiB 配置下最多接纳两个未完成导出的 span（包含正在导出的 span），避免仍排队数十条大正文。高并发或 Cloud 故障时仍可能非阻塞丢弃 telemetry；这不会改变模型上下文、客户端响应或计费。
+
+Cloud 可能把超大正文自动转存为文本 media，API 的 input/output 则返回 `@@@langfuseMedia:...|source=field_size_limit@@@` 引用。这不是应用的截断标记。核对完整性时须通过 `/api/public/media/{mediaId}` 获取下载地址，再下载原文检查字节长度与哈希；不要把引用字符串的长度当成原文长度，也不要公开有时效的签名下载地址。
+
 > 自由文本 opt-in 不能保证自动脱敏，操作者应知悉任意自由文本可能仍含敏感内容。不要使用生产密钥或私人数据作为测试 prompt。
 
 ## 7. 故障隔离与资源上限
 
 - 后台 exporter 使用独立 HTTP transport，**不复用**携带上游密钥的 relay HTTP client，强制 TLS 1.2+ 正常证书验证。
-- 队列 512 spans、批次 64、间隔 1 秒，队列满**非阻塞丢弃**，丢弃计数可通过诊断读取。
+- 通常队列 512 spans、批次 64、间隔 1 秒；正文开启且预算大于 64 KiB 时每批 1 span、队列至多 32。预算超过 1 MiB 后使用 gzip，队列容量为 max(2, floor(64 MiB / (2 × 正文预算)))；32 MiB 配置对应 2 spans，容量包含导出中的 span。队列满**非阻塞丢弃**，丢弃计数可通过诊断读取。
 - Cloud 返回 401/403 不重试，429/可重试 5xx 按 SDK 限时退避。
 - 错误 hook 限频打印受控分类（authentication_failed/rate_limited/server_error/transport_failed），**不记录可能含 URL/header/payload 的原始 exporter error**。`Exporter.DropCount()` 与 `FailureCount()` 分别提供丢弃与导出失败计数。
 - 禁止每次请求另开 goroutine 执行同步 HTTP 上报。
@@ -235,3 +241,31 @@ Gemini 既有测试并行执行 gin.SetMode 会触发包级全局变量竞态；
 ### 正文采集验证
 
 按操作者要求，本地 `.env` 已设置 `LANGFUSE_CAPTURE_CONTENT=true` 并重启 13000 端口实例；Compose 已增加该变量透传，未配置时仍默认关闭。新发起的非流式 trace `3698581d0afd47fb60d3c76a97eb088b` 与 SSE trace `5b83be456085c3f473db07306e1fffda` 已通过 Cloud API 读回：根节点及 GENERATION 的 input 均包含 `local observability validation`，output 均为 `local validation ok`。之前关闭正文采集时生成的历史记录仍为空。开启后允许采集的请求/响应文本会发送到美国区 Cloud；采集范围及字节限制继续生效。
+
+## 15. 1 MiB 上限与生产配置验证（2026-11-24）
+
+- 上限校验扩大到 1048576 字节，默认仍为 8192；输入/输出独立计量，保留 JSON 编码预算和 UTF-8 截断。正文开启且上限大于 64 KiB 时使用 32 spans 队列和单 span 批次。
+- `go test ./pkg/observability`、`go test -race ./pkg/observability`、Linux/amd64 根应用构建、`git diff --check` 及 OpenSpec strict 校验通过。本次未修改 relaykit。
+- 使用当前 exporter 和无敏感合成文本向 Cloud 写入 trace `b93fab0e0be65f23dc9d584db48bc54b`。API 读回根与 GENERATION，输入、输出各 1048574 字节且全文逐字匹配；其 JSON 字符串编码含引号后各为 1048576 字节。该探针没有调用模型，不替代 5.4/5.5 的协议验收。
+- 生产 `/data/new-api/data/.env` 已设置 `LANGFUSE_MAX_CONTENT_BYTES=1048576`，镜像为 `new-api-custom:content-1m-ad0c7a964e8e`；容器内二进制 SHA-256 与构建产物匹配。仅替换 new-api 容器及其配置，保留原网络 IP、挂载和容器环境；其他容器的 ID、启动时间和重启计数未变。
+- 两个主域名的首页与 `/api/status` 均返回 200；Langfuse 配对凭据、网络、dotenv 可读性及无初始化失败诊断已复核。旧镜像、旧容器和受限权限的配置备份保留用于回滚。
+- 1 MiB 是字节限制，不是 1M token。配置只影响新请求；更大的上下文仍可能截断，历史记录不回填。
+
+## 16. 百万 token 长上下文验证（2026-11-24）
+
+生产配置已在上一轮 1 MiB 的基础上更新为输入/输出各 32 MiB：
+
+```dotenv
+LANGFUSE_MAX_CONTENT_BYTES=33554432
+LANGFUSE_EXPORT_TIMEOUT_SECONDS=30
+LANGFUSE_FLUSH_TIMEOUT_SECONDS=30
+```
+
+- 合成输入使用项目既有的 `cl100k_base` 分词器确认为 1,048,576 token；采集后的输入含消息分隔换行，共 19,922,945 字节。合成输出为 1,200,000 字节；未调用模型供应商，也未将测试 token 数作为真实模型 usage 上报。
+- 当前 exporter 通过 gzip 写入目标项目的 trace `2311d5c936edd794b18db8a25bd45a1c`。Cloud 把该输入自动转为 `source=field_size_limit` 文本 media 引用，输出仍内联。通过 media API 下载原文并逐字及 SHA-256 校验，根与 GENERATION 的输入、输出均完整匹配且无截断标记。
+- 原文输入 SHA-256：`87f14022afbce6489f8278e2781afc2b1e3621647b1ab6826621bec9645c3af0`。脱敏验证结果位于 Git 忽略目录 `.local-tests/million-token/`；签名下载地址只保存在该目录内的 0600 文件，不写入文档。
+- `go test ./pkg/observability`、`go test -race ./pkg/observability`、Linux/amd64 根应用构建、OpenSpec strict 校验及 diff 空白检查通过。回归覆盖实际百万 token 的请求提取、响应提取、根/子 OTLP 正文、gzip 解码、32 MiB JSON/UTF-8 边界及队列满时非阻塞丢弃。
+- 生产镜像为 `new-api-custom:million-token-8bbf281fd8f5`，容器内二进制 SHA-256 与构建产物一致；仅替换 new-api 镜像及其 dotenv 配置，保留挂载、网络 IP 和容器原始环境变量。其他容器的 ID、启动时间与重启计数保持不变。
+- 两个主域名的首页和 `/api/status` 均返回 200，Langfuse 项目凭据、网络、配置可读性及无初始化失败诊断已复核。旧镜像、旧容器与受限权限配置备份保留用于回滚。
+
+本结果证明该实际 tokenizer 的百万 token 文本可完整到达 Cloud，不把所有模型的 token 与字节当作固定换算。32 MiB 预算仍有界；采集范围、采样、故障丢弃和历史不回填规则保持有效。该合成验收不替代 5.4/5.5 的真实模型和多协议验收。

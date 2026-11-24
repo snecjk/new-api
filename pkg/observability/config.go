@@ -201,5 +201,5 @@ const (
 	IngestionPath    = "/api/public/otel/v1/traces"
 	IngestionVersion = "4"
 	MinContentBytes  = 256
-	MaxContentBytes  = 65536
+	MaxContentBytes  = 32 << 20
 )

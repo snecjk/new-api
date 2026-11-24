@@ -86,8 +86,19 @@ func newExporter(cfg Config, client *http.Client) (*Exporter, error) {
 	if err != nil {
 		return e, err
 	}
+	queueSize, batchSize := 512, 64
+	compression := otlptracehttp.NoCompression
+	if cfg.CaptureContent && cfg.MaxContentBytes > 64<<10 {
+		// Large input/output attributes need smaller batches and fewer queued spans.
+		queueSize, batchSize = 32, 1
+		if cfg.MaxContentBytes > 1<<20 {
+			// Keep roughly 64 MiB of queued content, but admit both spans of a request.
+			queueSize = max(2, (64<<20)/(2*cfg.MaxContentBytes))
+			compression = otlptracehttp.GzipCompression
+		}
+	}
+	p := &boundedProcessor{maxPending: int64(queueSize)}
 	// Enforce the same redirect boundary for injected TLS test clients.
-	p := &boundedProcessor{}
 	clientCopy := *client
 	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	transport := clientCopy.Transport
@@ -98,6 +109,7 @@ func newExporter(cfg Config, client *http.Client) (*Exporter, error) {
 	client = &clientCopy
 	exp, err := otlptracehttp.New(context.Background(),
 		otlptracehttp.WithEndpointURL(endpoint), otlptracehttp.WithHTTPClient(client),
+		otlptracehttp.WithCompression(compression),
 		otlptracehttp.WithHeaders(map[string]string{"Authorization": cfg.BasicAuth(), "x-langfuse-ingestion-version": IngestionVersion}),
 		otlptracehttp.WithTimeout(time.Duration(cfg.ExportTimeoutSec)*time.Second),
 		otlptracehttp.WithRetry(otlptracehttp.RetryConfig{Enabled: true, InitialInterval: 100 * time.Millisecond, MaxInterval: time.Second, MaxElapsedTime: time.Duration(cfg.ExportTimeoutSec) * time.Second}),
@@ -106,7 +118,7 @@ func newExporter(cfg Config, client *http.Client) (*Exporter, error) {
 		return e, errors.New("langfuse: exporter initialization failed")
 	}
 	guarded := &diagnosticExporter{SpanExporter: exp, processor: p}
-	p.next = sdktrace.NewBatchSpanProcessor(guarded, sdktrace.WithMaxQueueSize(512), sdktrace.WithMaxExportBatchSize(64), sdktrace.WithBatchTimeout(time.Second), sdktrace.WithExportTimeout(time.Duration(cfg.ExportTimeoutSec)*time.Second))
+	p.next = sdktrace.NewBatchSpanProcessor(guarded, sdktrace.WithMaxQueueSize(queueSize), sdktrace.WithMaxExportBatchSize(batchSize), sdktrace.WithBatchTimeout(time.Second), sdktrace.WithExportTimeout(time.Duration(cfg.ExportTimeoutSec)*time.Second))
 	e.processor = p
 	e.provider = sdktrace.NewTracerProvider(
 		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.SampleRate))),
@@ -150,6 +162,7 @@ func (e *Exporter) Tracer(name string) trace.Tracer {
 // overflow the SDK queue; excess work is dropped synchronously without blocking.
 type boundedProcessor struct {
 	next           sdktrace.SpanProcessor
+	maxPending     int64
 	pending        atomic.Int64
 	dropped        atomic.Int64
 	failed         atomic.Int64
@@ -167,7 +180,7 @@ func (p *boundedProcessor) OnEnd(s sdktrace.ReadOnlySpan) {
 	}
 	for {
 		n := p.pending.Load()
-		if n >= 512 {
+		if n >= p.maxPending {
 			p.dropped.Add(1)
 			p.diagnose("queue_full")
 			return

@@ -118,6 +118,18 @@
 ### Requirement: Explicit bounded text capture
 系统 SHALL 仅在操作者显式开启文本捕获时提取支持协议中可识别的文本字段；捕获内容 SHALL 按 UTF-8 安全截断并标记截断。不支持的 opaque 内容及媒体 SHALL 跳过并标记，不得整包序列化作为兜底。操作者 SHALL 获知任意自由文本可能仍含敏感内容。
 
+#### Scenario: One MiB content capture
+- **WHEN** 操作者显式配置 LANGFUSE_MAX_CONTENT_BYTES=1048576 并启用正文捕获
+- **THEN** 输入和输出各自支持最多 1 MiB 的 UTF-8/JSON 转义后字节预算，超出仍安全截断
+- **AND** 默认值保持 8192；更大的正文使用缩小的有界队列和单 observation 导出批次
+- **AND** 该上限表示字节而非模型 token 数，配置调整不回填历史记录
+
+#### Scenario: Million-token context capture
+- **WHEN** 操作者显式配置 33554432 字节正文预算并启用正文捕获
+- **THEN** 输入和输出各支持 32 MiB 预算，实际 tokenizer 确认的百万 token 用例在预算内完整导出且无截断标记
+- **AND** 大正文使用 gzip、单 observation 批次及随正文预算缩小的有界队列，队列满时仍不阻塞模型代理
+- **AND** 不修改模型上下文限制或计费，不把所有 tokenizer 的 token 数与字节数当成固定换算
+
 #### Scenario: Oversized text output
 - **WHEN** 显式开启捕获且模型输出超过配置的字节上限
 - **THEN** 仅保留有界、有效 UTF-8 的文本并设置截断标记
