@@ -25,6 +25,31 @@ import type { SubscriptionPlan, PlanPayload } from '../types'
 
 export function getPlanFormSchema(t: TFunction) {
   return z.object({
+    rpm_limit: z.coerce
+      .number()
+      .int(t('Please enter a valid number'))
+      .min(1, t('Please enter a valid number'))
+      .max(1000000, t('Please enter a valid number')),
+    rpm_tiers: z
+      .array(
+        z.object({
+          id: z.number().optional(),
+          rpm: z.coerce
+            .number()
+            .int(t('Please enter a valid number'))
+            .min(1, t('Please enter a valid number'))
+            .max(1000000, t('Please enter a valid number')),
+          price_amount: z.coerce
+            .number()
+            .min(0.01, t('Please enter a valid number'))
+            .max(9999, t('Please enter a valid number')),
+          enabled: z.boolean(),
+          stripe_price_id: z.string().optional(),
+          creem_product_id: z.string().optional(),
+          waffo_pancake_product_id: z.string().optional(),
+        })
+      )
+      .max(50),
     title: z.string().min(1, t('Please enter plan title')),
     subtitle: z.string().optional(),
     price_amount: z.coerce.number().min(0, t('Please enter amount')),
@@ -56,6 +81,8 @@ export function getPlanFormSchema(t: TFunction) {
 export type PlanFormValues = z.infer<ReturnType<typeof getPlanFormSchema>>
 
 export const PLAN_FORM_DEFAULTS: PlanFormValues = {
+  rpm_limit: 5,
+  rpm_tiers: [],
   title: '',
   subtitle: '',
   price_amount: 0,
@@ -79,6 +106,8 @@ export const PLAN_FORM_DEFAULTS: PlanFormValues = {
 
 export function planToFormValues(plan: SubscriptionPlan): PlanFormValues {
   return {
+    rpm_limit: plan.rpm_limit ?? 5,
+    rpm_tiers: plan.rpm_tiers ?? [],
     title: plan.title || '',
     subtitle: plan.subtitle || '',
     price_amount: Number(plan.price_amount || 0),

@@ -53,7 +53,13 @@ interface PaymentMethod {
   name?: string
 }
 
-interface Props {
+export interface SubscriptionPurchaseDialogProps {
+  rpmPurchase?: {
+    subscriptionId: number
+    tierId: number
+    rpm: number
+    endTime: number
+  }
   open: boolean
   onOpenChange: (open: boolean) => void
   plan: PlanRecord | null
@@ -68,7 +74,9 @@ interface Props {
   onPurchaseSuccess?: () => void | Promise<void>
 }
 
-export function SubscriptionPurchaseDialog(props: Props) {
+export function SubscriptionPurchaseDialog(
+  props: SubscriptionPurchaseDialogProps
+) {
   const { t } = useTranslation()
   const { currency } = useSystemConfig()
   const [paying, setPaying] = useState(false)
@@ -85,6 +93,18 @@ export function SubscriptionPurchaseDialog(props: Props) {
   const plan = props.plan?.plan
   if (!plan) return null
 
+  const purchaseRequest = {
+    plan_id: plan.id,
+    subscription_id: props.rpmPurchase?.subscriptionId,
+    rpm_tier_id: props.rpmPurchase?.tierId,
+  }
+  let validity = formatDuration(plan, t)
+  let quotaDisplay =
+    plan.total_amount > 0 ? formatQuota(plan.total_amount) : t('Unlimited')
+  if (props.rpmPurchase) {
+    validity = new Date(props.rpmPurchase.endTime * 1000).toLocaleString()
+    quotaDisplay = `+${props.rpmPurchase.rpm} RPM`
+  }
   const hasStripe = props.enableStripe && !!plan.stripe_price_id
   const hasCreem = props.enableCreem && !!plan.creem_product_id
   const hasWaffoPancake =
@@ -97,7 +117,6 @@ export function SubscriptionPurchaseDialog(props: Props) {
       ?.name ||
     selectedEpayMethod ||
     t('Select payment method')
-  const totalAmount = Number(plan.total_amount || 0)
   const price = Number(plan.price_amount || 0).toFixed(2)
   const quotaPerUnit =
     currency?.quotaPerUnit && currency.quotaPerUnit > 0
@@ -117,7 +136,7 @@ export function SubscriptionPurchaseDialog(props: Props) {
   const handlePayStripe = async () => {
     setPaying(true)
     try {
-      const res = await paySubscriptionStripe({ plan_id: plan.id })
+      const res = await paySubscriptionStripe(purchaseRequest)
       if (res.message === 'success' && res.data?.pay_link) {
         window.open(res.data.pay_link, '_blank')
         toast.success(t('Payment page opened'))
@@ -139,7 +158,7 @@ export function SubscriptionPurchaseDialog(props: Props) {
   const handlePayCreem = async () => {
     setPaying(true)
     try {
-      const res = await paySubscriptionCreem({ plan_id: plan.id })
+      const res = await paySubscriptionCreem(purchaseRequest)
       if (res.message === 'success' && res.data?.checkout_url) {
         window.open(res.data.checkout_url, '_blank')
         toast.success(t('Payment page opened'))
@@ -163,7 +182,7 @@ export function SubscriptionPurchaseDialog(props: Props) {
   const handlePayWaffoPancake = async () => {
     setPaying(true)
     try {
-      const res = await paySubscriptionWaffoPancake({ plan_id: plan.id })
+      const res = await paySubscriptionWaffoPancake(purchaseRequest)
       if (res.message === 'success' && res.data?.checkout_url) {
         toast.success(t('Redirecting to payment page...'))
         window.location.href = res.data.checkout_url
@@ -193,7 +212,7 @@ export function SubscriptionPurchaseDialog(props: Props) {
     setPaying(true)
     try {
       const res = await paySubscriptionEpay({
-        plan_id: plan.id,
+        ...purchaseRequest,
         payment_method: selectedEpayMethod,
       })
       if (res.message === 'success' && res.url) {
@@ -236,9 +255,15 @@ export function SubscriptionPurchaseDialog(props: Props) {
     }
     setPaying(true)
     try {
-      const res = await paySubscriptionBalance({ plan_id: plan.id })
+      const res = await paySubscriptionBalance(purchaseRequest)
       if (res.success) {
-        toast.success(t('Subscription purchased successfully'))
+        toast.success(
+          t(
+            props.rpmPurchase
+              ? 'RPM purchased successfully'
+              : 'Subscription purchased successfully'
+          )
+        )
         void props.onPurchaseSuccess?.()
         props.onOpenChange(false)
       } else {
@@ -262,7 +287,7 @@ export function SubscriptionPurchaseDialog(props: Props) {
       title={
         <>
           <Crown className='h-5 w-5' />
-          {t('Purchase Subscription')}
+          {t(props.rpmPurchase ? 'Buy RPM' : 'Purchase Subscription')}
         </>
       }
       contentClassName='max-sm:w-[calc(100vw-1.5rem)] sm:max-w-md'
@@ -271,6 +296,11 @@ export function SubscriptionPurchaseDialog(props: Props) {
       bodyClassName='space-y-4'
     >
       <div className='space-y-3 sm:space-y-4'>
+        {props.rpmPurchase && (
+          <p className='text-muted-foreground text-sm'>
+            {t('RPM add-ons expire with this subscription.')}
+          </p>
+        )}
         <div className='bg-muted/50 space-y-2.5 rounded-lg border p-3 sm:space-y-3 sm:p-4'>
           <div className='flex justify-between'>
             <span className='text-muted-foreground text-sm'>
@@ -286,27 +316,28 @@ export function SubscriptionPurchaseDialog(props: Props) {
             </span>
             <span className='flex items-center gap-1 text-sm'>
               <CalendarClock className='h-3.5 w-3.5' />
-              {formatDuration(plan, t)}
+              {validity}
             </span>
           </div>
-          {formatResetPeriod(plan, t) !== t('No Reset') && (
-            <div className='flex justify-between'>
-              <span className='text-muted-foreground text-sm'>
-                {t('Reset Period')}
-              </span>
-              <span className='text-sm'>{formatResetPeriod(plan, t)}</span>
-            </div>
-          )}
+          {!props.rpmPurchase &&
+            formatResetPeriod(plan, t) !== t('No Reset') && (
+              <div className='flex justify-between'>
+                <span className='text-muted-foreground text-sm'>
+                  {t('Reset Period')}
+                </span>
+                <span className='text-sm'>{formatResetPeriod(plan, t)}</span>
+              </div>
+            )}
           <div className='flex items-center justify-between'>
             <span className='text-muted-foreground text-sm'>
-              {t('Plan Quota')}
+              {t(props.rpmPurchase ? 'Additional RPM' : 'Plan Quota')}
             </span>
             <span className='flex items-center gap-1 text-sm'>
               <Package className='h-3.5 w-3.5' />
-              {totalAmount > 0 ? formatQuota(totalAmount) : t('Unlimited')}
+              {quotaDisplay}
             </span>
           </div>
-          {plan.upgrade_group && (
+          {!props.rpmPurchase && plan.upgrade_group && (
             <div className='flex items-center justify-between'>
               <span className='text-muted-foreground text-sm'>
                 {t('Upgrade Group')}
@@ -405,12 +436,10 @@ export function SubscriptionPurchaseDialog(props: Props) {
             {hasEpay && (
               <div className='grid grid-cols-[minmax(0,1fr)_auto] gap-2'>
                 <Select
-                  items={[
-                    ...(props.epayMethods || []).map((m) => ({
-                      value: m.type,
-                      label: m.name || m.type,
-                    })),
-                  ]}
+                  items={(props.epayMethods || []).map((m) => ({
+                    value: m.type,
+                    label: m.name || m.type,
+                  }))}
                   value={selectedEpayMethod}
                   onValueChange={(v) => v !== null && setSelectedEpayMethod(v)}
                   disabled={limitReached}

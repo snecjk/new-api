@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -144,7 +145,9 @@ func InvalidateSubscriptionPlanCache(planId int) {
 
 // Subscription plan
 type SubscriptionPlan struct {
-	Id int `json:"id"`
+	RPMLimit *int                  `json:"rpm_limit" gorm:"default:5"`
+	RPMTiers []SubscriptionRPMTier `json:"rpm_tiers" gorm:"-"`
+	Id       int                   `json:"id"`
 
 	Title    string `json:"title" gorm:"type:varchar(128);not null"`
 	Subtitle string `json:"subtitle" gorm:"type:varchar(255);default:''"`
@@ -190,6 +193,10 @@ type SubscriptionPlan struct {
 }
 
 func (p *SubscriptionPlan) BeforeCreate(tx *gorm.DB) error {
+	p.NormalizeDefaults()
+	if err := p.ValidateRPM(); err != nil {
+		return err
+	}
 	now := common.GetTimestamp()
 	p.CreatedAt = now
 	p.UpdatedAt = now
@@ -202,6 +209,9 @@ func (p *SubscriptionPlan) BeforeUpdate(tx *gorm.DB) error {
 }
 
 func (p *SubscriptionPlan) NormalizeDefaults() {
+	if p.RPMLimit == nil {
+		p.RPMLimit = common.GetPointer(DefaultSubscriptionRPM)
+	}
 	if p.AllowBalancePay == nil {
 		p.AllowBalancePay = common.GetPointer(true)
 	}
@@ -212,10 +222,14 @@ func (p *SubscriptionPlan) NormalizeDefaults() {
 
 // Subscription order (payment -> webhook -> create UserSubscription)
 type SubscriptionOrder struct {
-	Id     int     `json:"id"`
-	UserId int     `json:"user_id" gorm:"index"`
-	PlanId int     `json:"plan_id" gorm:"index"`
-	Money  float64 `json:"money"`
+	Purpose            string  `json:"purpose" gorm:"type:varchar(32);default:''"`
+	UserSubscriptionId int     `json:"user_subscription_id" gorm:"index"`
+	RPMTierId          int     `json:"rpm_tier_id"`
+	RPMIncrement       int     `json:"rpm_increment"`
+	Id                 int     `json:"id"`
+	UserId             int     `json:"user_id" gorm:"index"`
+	PlanId             int     `json:"plan_id" gorm:"index"`
+	Money              float64 `json:"money"`
 
 	TradeNo         string `json:"trade_no" gorm:"unique;type:varchar(255);index"`
 	PaymentMethod   string `json:"payment_method" gorm:"type:varchar(50)"`
@@ -251,9 +265,12 @@ func GetSubscriptionOrderByTradeNo(tradeNo string) *SubscriptionOrder {
 
 // User subscription instance
 type UserSubscription struct {
-	Id     int `json:"id"`
-	UserId int `json:"user_id" gorm:"index;index:idx_user_sub_active,priority:1"`
-	PlanId int `json:"plan_id" gorm:"index"`
+	BaseRPM  int `json:"base_rpm" gorm:"not null;default:5"`
+	AddedRPM int `json:"added_rpm" gorm:"not null;default:0"`
+	TotalRPM int `json:"total_rpm" gorm:"-"`
+	Id       int `json:"id"`
+	UserId   int `json:"user_id" gorm:"index;index:idx_user_sub_active,priority:1"`
+	PlanId   int `json:"plan_id" gorm:"index"`
 
 	AmountTotal int64 `json:"amount_total" gorm:"type:bigint;not null;default:0"`
 	AmountUsed  int64 `json:"amount_used" gorm:"type:bigint;not null;default:0"`
@@ -405,6 +422,9 @@ func getSubscriptionPlanByIdTx(tx *gorm.DB, id int) (*SubscriptionPlan, error) {
 	if err := query.Where("id = ?", id).First(&plan).Error; err != nil {
 		return nil, err
 	}
+	if err := query.Where("plan_id = ?", id).Order("id asc").Find(&plan.RPMTiers).Error; err != nil {
+		return nil, err
+	}
 	plan.NormalizeDefaults()
 	_ = getSubscriptionPlanCache().SetWithTTL(key, plan, subscriptionPlanCacheTTL())
 	return &plan, nil
@@ -502,7 +522,7 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 			return nil, errors.New("已达到该套餐购买上限")
 		}
 	}
-	nowUnix := GetDBTimestamp()
+	nowUnix := getDBTimestampTx(tx)
 	now := time.Unix(nowUnix, 0)
 	endUnix, err := calcPlanEndTime(now, plan)
 	if err != nil {
@@ -533,7 +553,9 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 	if plan.AllowWalletOverflow != nil {
 		allowWalletOverflow = *plan.AllowWalletOverflow
 	}
+	plan.NormalizeDefaults()
 	sub := &UserSubscription{
+		BaseRPM:             *plan.RPMLimit,
 		UserId:              userId,
 		PlanId:              plan.Id,
 		AmountTotal:         plan.TotalAmount,
@@ -587,13 +609,16 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 		if expectedPaymentProvider != "" && order.PaymentProvider != expectedPaymentProvider {
 			return ErrPaymentMethodMismatch
 		}
-		if order.Status == common.TopUpStatusSuccess {
+		if order.Status == common.TopUpStatusSuccess || order.Status == SubscriptionOrderRefundPending {
 			return nil
 		}
 		if order.Status != common.TopUpStatusPending {
 			return ErrSubscriptionOrderStatusInvalid
 		}
-		plan, err := GetSubscriptionPlanById(order.PlanId)
+		if order.Purpose == SubscriptionOrderRPM {
+			return completeSubscriptionRPMOrderTx(tx, &order, providerPayload, actualPaymentMethod)
+		}
+		plan, err := getSubscriptionPlanByIdTx(tx, order.PlanId)
 		if err != nil {
 			return err
 		}
@@ -729,17 +754,21 @@ func AdminBindSubscription(userId int, planId int, sourceNote string) (string, e
 }
 
 func calcSubscriptionBalanceQuota(priceAmount float64) (int, error) {
-	if priceAmount <= 0 {
+	if math.IsNaN(priceAmount) || math.IsInf(priceAmount, 0) || priceAmount < 0 {
+		return 0, errors.New("invalid subscription price")
+	}
+	if priceAmount == 0 {
 		return 0, nil
 	}
-	if common.QuotaPerUnit <= 0 {
-		return 0, errors.New("额度单位配置错误")
+	if common.QuotaPerUnit <= 0 || math.IsNaN(common.QuotaPerUnit) || math.IsInf(common.QuotaPerUnit, 0) {
+		return 0, errors.New("invalid subscription price or quota unit")
 	}
-	quota := decimal.NewFromFloat(priceAmount).
-		Mul(decimal.NewFromFloat(common.QuotaPerUnit)).
-		Ceil().
-		IntPart()
-	return int(quota), nil
+	quota, clamp := common.QuotaFromDecimalChecked(decimal.NewFromFloat(priceAmount).
+		Mul(decimal.NewFromFloat(common.QuotaPerUnit)).Ceil())
+	if clamp != nil {
+		return 0, clamp
+	}
+	return quota, nil
 }
 
 // PurchaseSubscriptionWithBalance creates a subscription by deducting the user's wallet quota.
@@ -1406,7 +1435,15 @@ func RefundSubscriptionPreConsume(requestId string) error {
 			record.Status = "refunded"
 			return tx.Save(&record).Error
 		}
-		if err := PostConsumeUserSubscriptionDelta(record.UserSubscriptionId, -record.PreConsumed); err != nil {
+		var sub UserSubscription
+		if err := lockForUpdate(tx).First(&sub, record.UserSubscriptionId).Error; err != nil {
+			return err
+		}
+		used := sub.AmountUsed - record.PreConsumed
+		if used < 0 {
+			used = 0
+		}
+		if err := tx.Model(&UserSubscription{}).Where("id = ?", sub.Id).Update("amount_used", used).Error; err != nil {
 			return err
 		}
 		record.Status = "refunded"

@@ -302,6 +302,10 @@ func handleCheckoutCompleted(c *gin.Context, event *CreemWebhookEvent) {
 	// Try complete subscription order first
 	LockOrder(referenceId)
 	defer UnlockOrder(referenceId)
+	if err := model.ValidateSubscriptionRPMReceipt(referenceId, model.PaymentProviderCreem, fmt.Sprintf("%.2f", float64(event.Object.Order.Amount)/100), event.Object.Order.Currency); err != nil {
+		c.Status(http.StatusBadRequest)
+		return
+	}
 	if err := model.CompleteSubscriptionOrder(referenceId, common.GetJsonString(event), model.PaymentProviderCreem, ""); err == nil {
 		logger.LogInfo(c.Request.Context(), fmt.Sprintf("Creem 订阅订单处理成功 trade_no=%s creem_order_id=%s", referenceId, event.Object.Order.Id))
 		c.Status(http.StatusOK)

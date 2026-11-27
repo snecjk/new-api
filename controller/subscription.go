@@ -24,7 +24,9 @@ type BillingPreferenceRequest struct {
 }
 
 type SubscriptionBalancePayRequest struct {
-	PlanId int `json:"plan_id"`
+	SubscriptionId int `json:"subscription_id"`
+	RPMTierId      int `json:"rpm_tier_id"`
+	PlanId         int `json:"plan_id"`
 }
 
 // ---- User APIs ----
@@ -37,6 +39,10 @@ func GetSubscriptionPlans(c *gin.Context) {
 
 	var plans []model.SubscriptionPlan
 	if err := model.DB.Where("enabled = ?", true).Order("sort_order desc, id desc").Find(&plans).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := model.LoadSubscriptionRPMTiers(plans, true); err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -104,12 +110,18 @@ func SubscriptionRequestBalancePay(c *gin.Context) {
 
 	userId := c.GetInt("id")
 	var req SubscriptionBalancePayRequest
-	if err := c.ShouldBindJSON(&req); err != nil || req.PlanId <= 0 {
+	if err := c.ShouldBindJSON(&req); err != nil || (req.PlanId <= 0 && req.RPMTierId <= 0) || req.RPMTierId < 0 || req.SubscriptionId < 0 || (req.SubscriptionId > 0 && req.RPMTierId == 0) {
 		common.ApiErrorMsg(c, "参数错误")
 		return
 	}
 
-	if err := model.PurchaseSubscriptionWithBalance(userId, req.PlanId); err != nil {
+	var purchaseErr error
+	if req.RPMTierId > 0 {
+		purchaseErr = model.PurchaseSubscriptionRPMWithBalance(userId, req.SubscriptionId, req.RPMTierId)
+	} else {
+		purchaseErr = model.PurchaseSubscriptionWithBalance(userId, req.PlanId)
+	}
+	if err := purchaseErr; err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -121,6 +133,10 @@ func SubscriptionRequestBalancePay(c *gin.Context) {
 func AdminListSubscriptionPlans(c *gin.Context) {
 	var plans []model.SubscriptionPlan
 	if err := model.DB.Order("sort_order desc, id desc").Find(&plans).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := model.LoadSubscriptionRPMTiers(plans, false); err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -147,6 +163,14 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.ApiErrorMsg(c, "参数错误")
 		return
+	}
+	if err := req.Plan.ValidateRPM(); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	for i := range req.Plan.RPMTiers {
+		req.Plan.RPMTiers[i].Id = 0
+		req.Plan.RPMTiers[i].PlanId = 0
 	}
 	req.Plan.Id = 0
 	if strings.TrimSpace(req.Plan.Title) == "" {
@@ -240,6 +264,10 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		common.ApiErrorMsg(c, "价格不能超过9999")
 		return
 	}
+	if err := req.Plan.ValidateRPM(); err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	req.Plan.Id = id
 	if req.Plan.Currency == "" {
 		req.Plan.Currency = "USD"
@@ -281,7 +309,16 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		// update plan (allow zero values updates with map)
+		var existing model.SubscriptionPlan
+		if err := tx.First(&existing, id).Error; err != nil {
+			return err
+		}
+		if req.Plan.RPMLimit == nil {
+			existing.NormalizeDefaults()
+			req.Plan.RPMLimit = existing.RPMLimit
+		}
 		updateMap := map[string]interface{}{
+			"rpm_limit":                  *req.Plan.RPMLimit,
 			"title":                      req.Plan.Title,
 			"subtitle":                   req.Plan.Subtitle,
 			"price_amount":               req.Plan.PriceAmount,
@@ -310,6 +347,9 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		}
 		if err := tx.Model(&model.SubscriptionPlan{}).Where("id = ?", id).Updates(updateMap).Error; err != nil {
 			return err
+		}
+		if req.Plan.RPMTiers != nil {
+			return model.ReplaceSubscriptionRPMTiersTx(tx, id, req.Plan.RPMTiers)
 		}
 		return nil
 	})

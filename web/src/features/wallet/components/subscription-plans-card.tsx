@@ -51,6 +51,7 @@ import {
   updateBillingPreference,
 } from '@/features/subscriptions/api'
 import { SubscriptionPurchaseDialog } from '@/features/subscriptions/components/dialogs/subscription-purchase-dialog'
+import { SubscriptionRPMPurchase } from '@/features/subscriptions/components/subscription-rpm-purchase'
 import { formatDuration, formatResetPeriod } from '@/features/subscriptions/lib'
 import type {
   PlanRecord,
@@ -158,6 +159,15 @@ export function SubscriptionPlansCard({
     }
     init()
   }, [fetchPlans, fetchSelfSubscription])
+
+  useEffect(() => {
+    const refresh = () => {
+      void fetchSelfSubscription()
+      void onPurchaseSuccess?.()
+    }
+    window.addEventListener('focus', refresh)
+    return () => window.removeEventListener('focus', refresh)
+  }, [fetchSelfSubscription, onPurchaseSuccess])
 
   const handleRefresh = async () => {
     setRefreshing(true)
@@ -504,6 +514,22 @@ export function SubscriptionPlansCard({
                           </span>
                         )}
                       </div>
+                      <SubscriptionRPMPurchase
+                        plan={plans.find(
+                          (p) => p.plan.id === subscription.plan_id
+                        )}
+                        subscription={subscription}
+                        enableStripe={enableStripe}
+                        enableCreem={enableCreem}
+                        enableWaffoPancake={enableWaffoPancake}
+                        enableOnlineTopUp={enableOnlineTopUp}
+                        epayMethods={epayMethods}
+                        userQuota={userQuota}
+                        onPurchaseSuccess={async () => {
+                          await fetchSelfSubscription()
+                          await onPurchaseSuccess?.()
+                        }}
+                      />
                       {totalAmount > 0 && isActive && (
                         <Progress value={usagePercent} className='mt-2 h-1.5' />
                       )}
@@ -535,6 +561,7 @@ export function SubscriptionPlansCard({
               const reached = limit > 0 && count >= limit
 
               const benefits = [
+                `${t('Base RPM')}: ${plan.rpm_limit ?? 5}`,
                 `${t('Validity Period')}: ${formatDuration(plan, t)}`,
                 formatResetPeriod(plan, t) !== t('No Reset')
                   ? `${t('Quota Reset')}: ${formatResetPeriod(plan, t)}`

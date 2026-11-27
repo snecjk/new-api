@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { type ColumnDef } from '@tanstack/react-table'
+import type { ColumnDef } from '@tanstack/react-table'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -159,6 +159,12 @@ export function useSubscriptionsColumns(): ColumnDef<PlanRecord>[] {
           )
         },
         size: 140,
+      },
+      {
+        id: 'rpm_limit',
+        header: t('RPM Limit'),
+        cell: ({ row }) => <span>{row.original.plan.rpm_limit ?? 5} RPM</span>,
+        size: 100,
       },
       {
         id: 'total_amount',

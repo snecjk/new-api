@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 	"time"
 
 	"github.com/Calcium-Ion/go-epay/epay"
@@ -14,11 +13,14 @@ import (
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/samber/lo"
+	"github.com/shopspring/decimal"
 )
 
 type SubscriptionEpayPayRequest struct {
-	PlanId        int    `json:"plan_id"`
-	PaymentMethod string `json:"payment_method"`
+	SubscriptionId int    `json:"subscription_id"`
+	RPMTierId      int    `json:"rpm_tier_id"`
+	PlanId         int    `json:"plan_id"`
+	PaymentMethod  string `json:"payment_method"`
 }
 
 func SubscriptionRequestEpay(c *gin.Context) {
@@ -27,12 +29,12 @@ func SubscriptionRequestEpay(c *gin.Context) {
 	}
 
 	var req SubscriptionEpayPayRequest
-	if err := c.ShouldBindJSON(&req); err != nil || req.PlanId <= 0 {
+	if err := c.ShouldBindJSON(&req); err != nil || (req.PlanId <= 0 && req.RPMTierId <= 0) {
 		common.ApiErrorMsg(c, "参数错误")
 		return
 	}
 
-	plan, err := model.GetSubscriptionPlanById(req.PlanId)
+	plan, rpmTier, err := resolveSubscriptionCheckout(c.GetInt("id"), req.PlanId, req.SubscriptionId, req.RPMTierId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -94,6 +96,7 @@ func SubscriptionRequestEpay(c *gin.Context) {
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
 	}
+	setSubscriptionRPMOrder(order, req.SubscriptionId, rpmTier)
 	if err := order.Insert(); err != nil {
 		common.ApiErrorMsg(c, "创建订单失败")
 		return
@@ -102,7 +105,7 @@ func SubscriptionRequestEpay(c *gin.Context) {
 		Type:           req.PaymentMethod,
 		ServiceTradeNo: tradeNo,
 		Name:           fmt.Sprintf("SUB:%s", plan.Title),
-		Money:          strconv.FormatFloat(plan.PriceAmount, 'f', 2, 64),
+		Money:          decimal.NewFromFloat(plan.PriceAmount).StringFixed(2),
 		Device:         epay.PC,
 		NotifyUrl:      notifyUrl,
 		ReturnUrl:      returnUrl,
@@ -160,6 +163,10 @@ func SubscriptionEpayNotify(c *gin.Context) {
 	LockOrder(verifyInfo.ServiceTradeNo)
 	defer UnlockOrder(verifyInfo.ServiceTradeNo)
 
+	if err := model.ValidateSubscriptionRPMReceipt(verifyInfo.ServiceTradeNo, model.PaymentProviderEpay, params["money"], "USD"); err != nil {
+		c.String(http.StatusOK, "fail")
+		return
+	}
 	if err := model.CompleteSubscriptionOrder(verifyInfo.ServiceTradeNo, common.GetJsonString(verifyInfo), model.PaymentProviderEpay, verifyInfo.Type); err != nil {
 		_, _ = c.Writer.Write([]byte("fail"))
 		return
@@ -209,6 +216,10 @@ func SubscriptionEpayReturn(c *gin.Context) {
 	if verifyInfo.TradeStatus == epay.StatusTradeSuccess {
 		LockOrder(verifyInfo.ServiceTradeNo)
 		defer UnlockOrder(verifyInfo.ServiceTradeNo)
+		if err := model.ValidateSubscriptionRPMReceipt(verifyInfo.ServiceTradeNo, model.PaymentProviderEpay, params["money"], "USD"); err != nil {
+			c.Redirect(http.StatusFound, paymentReturnPath("/wallet?pay=fail"))
+			return
+		}
 		if err := model.CompleteSubscriptionOrder(verifyInfo.ServiceTradeNo, common.GetJsonString(verifyInfo), model.PaymentProviderEpay, verifyInfo.Type); err != nil {
 			c.Redirect(http.StatusFound, paymentReturnPath("/wallet?pay=fail"))
 			return

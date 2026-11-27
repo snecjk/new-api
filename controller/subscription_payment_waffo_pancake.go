@@ -17,7 +17,9 @@ import (
 )
 
 type SubscriptionWaffoPancakePayRequest struct {
-	PlanId int `json:"plan_id"`
+	SubscriptionId int `json:"subscription_id"`
+	RPMTierId      int `json:"rpm_tier_id"`
+	PlanId         int `json:"plan_id"`
 }
 
 func SubscriptionRequestWaffoPancakePay(c *gin.Context) {
@@ -26,12 +28,12 @@ func SubscriptionRequestWaffoPancakePay(c *gin.Context) {
 	}
 
 	var req SubscriptionWaffoPancakePayRequest
-	if err := c.ShouldBindJSON(&req); err != nil || req.PlanId <= 0 {
+	if err := c.ShouldBindJSON(&req); err != nil || (req.PlanId <= 0 && req.RPMTierId <= 0) {
 		common.ApiErrorMsg(c, "参数错误")
 		return
 	}
 
-	plan, err := model.GetSubscriptionPlanById(req.PlanId)
+	plan, rpmTier, err := resolveSubscriptionCheckout(c.GetInt("id"), req.PlanId, req.SubscriptionId, req.RPMTierId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -89,6 +91,7 @@ func SubscriptionRequestWaffoPancakePay(c *gin.Context) {
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
 	}
+	setSubscriptionRPMOrder(order, req.SubscriptionId, rpmTier)
 	if err := order.Insert(); err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo Pancake 订阅订单创建失败 user_id=%d plan_id=%d trade_no=%s error=%q", userId, plan.Id, tradeNo, err.Error()))
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "创建订单失败"})

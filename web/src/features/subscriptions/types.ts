@@ -22,6 +22,16 @@ import { z } from 'zod'
 // Subscription Plan Schema & Types
 // ============================================================================
 
+export const subscriptionRPMTierSchema = z.object({
+  id: z.number().optional(),
+  rpm: z.number(),
+  price_amount: z.number(),
+  enabled: z.boolean(),
+  stripe_price_id: z.string().optional(),
+  creem_product_id: z.string().optional(),
+  waffo_pancake_product_id: z.string().optional(),
+})
+
 export const subscriptionPlanSchema = z.object({
   id: z.number(),
   title: z.string(),
@@ -39,6 +49,8 @@ export const subscriptionPlanSchema = z.object({
   allow_wallet_overflow: z.boolean().optional().default(true),
   max_purchase_per_user: z.number(),
   total_amount: z.number(),
+  rpm_limit: z.number().optional(),
+  rpm_tiers: z.array(subscriptionRPMTierSchema).nullable().optional(),
   upgrade_group: z.string().optional(),
   downgrade_group: z.string().optional(),
   stripe_price_id: z.string().optional(),
@@ -66,6 +78,9 @@ export const userSubscriptionSchema = z.object({
   end_time: z.number(),
   amount_total: z.number(),
   amount_used: z.number(),
+  base_rpm: z.number().optional(),
+  added_rpm: z.number().optional(),
+  total_rpm: z.number().optional(),
   next_reset_time: z.number().optional(),
 })
 
@@ -90,6 +105,8 @@ export interface PlanPayload {
 }
 
 export interface SubscriptionPayRequest {
+  subscription_id?: number
+  rpm_tier_id?: number
   plan_id: number
   payment_method?: string
 }

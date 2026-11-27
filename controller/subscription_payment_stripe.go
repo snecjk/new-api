@@ -17,7 +17,9 @@ import (
 )
 
 type SubscriptionStripePayRequest struct {
-	PlanId int `json:"plan_id"`
+	SubscriptionId int `json:"subscription_id"`
+	RPMTierId      int `json:"rpm_tier_id"`
+	PlanId         int `json:"plan_id"`
 }
 
 func SubscriptionRequestStripePay(c *gin.Context) {
@@ -26,12 +28,12 @@ func SubscriptionRequestStripePay(c *gin.Context) {
 	}
 
 	var req SubscriptionStripePayRequest
-	if err := c.ShouldBindJSON(&req); err != nil || req.PlanId <= 0 {
+	if err := c.ShouldBindJSON(&req); err != nil || (req.PlanId <= 0 && req.RPMTierId <= 0) {
 		common.ApiErrorMsg(c, "参数错误")
 		return
 	}
 
-	plan, err := model.GetSubscriptionPlanById(req.PlanId)
+	plan, rpmTier, err := resolveSubscriptionCheckout(c.GetInt("id"), req.PlanId, req.SubscriptionId, req.RPMTierId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -79,7 +81,7 @@ func SubscriptionRequestStripePay(c *gin.Context) {
 	reference := fmt.Sprintf("sub-stripe-ref-%d-%d-%s", user.Id, time.Now().UnixMilli(), randstr.String(4))
 	referenceId := "sub_ref_" + common.Sha1([]byte(reference))
 
-	payLink, err := genStripeSubscriptionLink(referenceId, user.StripeCustomer, user.Email, plan.StripePriceId)
+	payLink, err := genStripeSubscriptionLink(referenceId, user.StripeCustomer, user.Email, plan.StripePriceId, rpmTier != nil)
 	if err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Stripe 订阅支付链接创建失败 trade_no=%s plan_id=%d error=%q", referenceId, plan.Id, err.Error()))
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "拉起支付失败"})
@@ -96,6 +98,7 @@ func SubscriptionRequestStripePay(c *gin.Context) {
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
 	}
+	setSubscriptionRPMOrder(order, req.SubscriptionId, rpmTier)
 	if err := order.Insert(); err != nil {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "创建订单失败"})
 		return
@@ -109,7 +112,7 @@ func SubscriptionRequestStripePay(c *gin.Context) {
 	})
 }
 
-func genStripeSubscriptionLink(referenceId string, customerId string, email string, priceId string) (string, error) {
+func genStripeSubscriptionLink(referenceId string, customerId string, email string, priceId string, oneTime bool) (string, error) {
 	stripe.Key = setting.StripeApiSecret
 
 	params := &stripe.CheckoutSessionParams{
@@ -125,6 +128,9 @@ func genStripeSubscriptionLink(referenceId string, customerId string, email stri
 		Mode: stripe.String(string(stripe.CheckoutSessionModeSubscription)),
 	}
 
+	if oneTime {
+		params.Mode = stripe.String(string(stripe.CheckoutSessionModePayment))
+	}
 	if "" == customerId {
 		if "" != email {
 			params.CustomerEmail = stripe.String(email)

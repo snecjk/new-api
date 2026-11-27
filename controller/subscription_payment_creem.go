@@ -17,7 +17,9 @@ import (
 )
 
 type SubscriptionCreemPayRequest struct {
-	PlanId int `json:"plan_id"`
+	SubscriptionId int `json:"subscription_id"`
+	RPMTierId      int `json:"rpm_tier_id"`
+	PlanId         int `json:"plan_id"`
 }
 
 func SubscriptionRequestCreemPay(c *gin.Context) {
@@ -36,12 +38,12 @@ func SubscriptionRequestCreemPay(c *gin.Context) {
 	}
 	c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
-	if err := c.ShouldBindJSON(&req); err != nil || req.PlanId <= 0 {
+	if err := c.ShouldBindJSON(&req); err != nil || (req.PlanId <= 0 && req.RPMTierId <= 0) {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "参数错误"})
 		return
 	}
 
-	plan, err := model.GetSubscriptionPlanById(req.PlanId)
+	plan, rpmTier, err := resolveSubscriptionCheckout(c.GetInt("id"), req.PlanId, req.SubscriptionId, req.RPMTierId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -96,6 +98,7 @@ func SubscriptionRequestCreemPay(c *gin.Context) {
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
 	}
+	setSubscriptionRPMOrder(order, req.SubscriptionId, rpmTier)
 	if err := order.Insert(); err != nil {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "创建订单失败"})
 		return
@@ -109,6 +112,9 @@ func SubscriptionRequestCreemPay(c *gin.Context) {
 	case operation_setting.QuotaDisplayTypeUSD:
 		currency = "USD"
 	default:
+		currency = "USD"
+	}
+	if rpmTier != nil {
 		currency = "USD"
 	}
 	product := &CreemProduct{

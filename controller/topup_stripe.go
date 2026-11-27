@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/shopspring/decimal"
 	"io"
 	"net/http"
 	"strconv"
@@ -269,6 +270,17 @@ func fulfillOrder(ctx context.Context, event stripe.Event, referenceId string, c
 		"amount_total": event.GetObjectValue("amount_total"),
 		"currency":     strings.ToUpper(event.GetObjectValue("currency")),
 		"event_type":   string(event.Type),
+	}
+	amount, amountErr := decimal.NewFromString(event.GetObjectValue("amount_total"))
+	if order := model.GetSubscriptionOrderByTradeNo(referenceId); order != nil && order.Purpose == model.SubscriptionOrderRPM {
+		if amountErr != nil {
+			logger.LogError(ctx, "invalid RPM payment amount")
+			return
+		}
+		if err := model.ValidateSubscriptionRPMReceipt(referenceId, model.PaymentProviderStripe, amount.Div(decimal.NewFromInt(100)).String(), event.GetObjectValue("currency")); err != nil {
+			logger.LogError(ctx, err.Error())
+			return
+		}
 	}
 	if err := model.CompleteSubscriptionOrder(referenceId, common.GetJsonString(payload), model.PaymentProviderStripe, ""); err == nil {
 		logger.LogInfo(ctx, fmt.Sprintf("Stripe 订阅订单处理成功 trade_no=%s event_type=%s client_ip=%s", referenceId, string(event.Type), callerIp))

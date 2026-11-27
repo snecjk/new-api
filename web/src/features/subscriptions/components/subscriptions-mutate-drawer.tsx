@@ -79,6 +79,7 @@ import {
   type PlanFormValues,
 } from '../lib'
 import type { PlanRecord } from '../types'
+import { SubscriptionRPMFields } from './subscription-rpm-fields'
 import { useSubscriptions } from './subscriptions-provider'
 
 interface Props {
@@ -204,7 +205,10 @@ export function SubscriptionsMutateDrawer({
         typeof res.data === 'object' &&
         res.data
       ) {
-        const created = res.data as { product_id: string; product_name: string }
+        const created = res.data as {
+          product_id: string
+          product_name: string
+        }
         form.setValue('waffo_pancake_product_id', created.product_id, {
           shouldDirty: true,
         })
@@ -580,6 +584,8 @@ export function SubscriptionsMutateDrawer({
                 />
               </div>
             </SideDrawerSection>
+
+            <SubscriptionRPMFields form={form} />
 
             {/* Duration Settings */}
             <SideDrawerSection>

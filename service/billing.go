@@ -1,10 +1,12 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
@@ -36,6 +38,19 @@ func PreConsumeBilling(c *gin.Context, preConsumedQuota int, relayInfo *relaycom
 	}
 	session, apiErr := NewBillingSession(c, relayInfo, preConsumedQuota)
 	if apiErr != nil {
+		return apiErr
+	}
+	if apiErr = CheckSubscriptionRPM(c.Request.Context(), relayInfo); apiErr != nil {
+		// Reject before dispatch and synchronously undo both funding and token reservations.
+		refundErr := session.funding.Refund()
+		if session.tokenConsumed > 0 && !relayInfo.IsPlayground {
+			refundErr = errors.Join(refundErr, model.IncreaseTokenQuota(relayInfo.TokenId, relayInfo.TokenKey, session.tokenConsumed))
+		}
+		if refundErr != nil {
+			logger.LogError(c, fmt.Sprintf("RPM rejection refund failed: %v", refundErr))
+			return types.NewError(refundErr, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+		}
+		session.refunded = true
 		return apiErr
 	}
 	relayInfo.Billing = session
